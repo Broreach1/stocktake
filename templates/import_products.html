@@ -1,0 +1,103 @@
+{% extends "layout.html" %}
+{% block content %}
+<div class="container">
+    <h1>📥 Import Products</h1>
+
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="flash-messages">
+          {% for msg in messages %}
+            <p>{{ msg }}</p>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <form method="POST" enctype="multipart/form-data" class="import-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        
+        <label for="file">Select Excel File (.xlsx):</label>
+        <input type="file" name="file" id="file" accept=".xlsx" required>
+        <small class="hint">
+            Required columns: <b>sku, name, price, cost, qty, min_qty, barcode</b>
+        </small>
+        
+        <div class="form-actions">
+            <button type="submit" class="btn-upload">⬆️ Upload</button>
+            <a href="{{ url_for('download_template') }}" class="btn-link">📄 Download Template</a>
+        </div>
+    </form>
+</div>
+
+<style>
+.container {
+    max-width: 500px;
+    margin: 40px auto;
+    background: #fff;
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+h1 {
+    margin-bottom: 20px;
+    font-size: 1.6rem;
+    font-weight: 600;
+    color: #333;
+    text-align: center;
+}
+.flash-messages {
+    background: #ffe6e6;
+    border: 1px solid #ff4d4d;
+    color: #b30000;
+    padding: 10px;
+    border-radius: 6px;
+    margin-bottom: 15px;
+}
+.import-form label {
+    font-weight: 500;
+    display: block;
+    margin-bottom: 6px;
+}
+.import-form input[type="file"] {
+    margin-bottom: 10px;
+}
+.hint {
+    display: block;
+    margin-bottom: 12px;
+    color: #666;
+    font-size: 0.9rem;
+}
+.form-actions {
+    margin-top: 15px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+.btn-upload {
+    padding: 10px 16px;
+    border-radius: 6px;
+    border: none;
+    background: #28a745;
+    color: #fff;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+.btn-upload:hover {
+    background: #218838;
+}
+.btn-link {
+    display: inline-block;
+    padding: 10px 14px;
+    border-radius: 6px;
+    background: #6c757d;
+    color: #fff;
+    text-decoration: none;
+    transition: background 0.2s;
+}
+.btn-link:hover {
+    background: #5a6268;
+}
+</style>
+{% endblock %}

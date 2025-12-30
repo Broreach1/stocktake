@@ -1,0 +1,62 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<h1>Checkout</h1>
+<table border="1" cellpadding="5">
+    <thead>
+        <tr>
+            <th>Product</th>
+            <th>Price</th>
+            <th>Qty</th>
+            <th>Total</th>
+        </tr>
+    </thead>
+    <tbody id="checkoutTable">
+        <!-- Items added via JS -->
+    </tbody>
+</table>
+
+<h3>Total: $<span id="checkoutTotal">0.00</span></h3>
+<button id="payBtn">Pay</button>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const checkoutTable = document.getElementById('checkoutTable');
+    const checkoutTotal = document.getElementById('checkoutTotal');
+
+    // Minimal working example cart (replace with localStorage or backend data)
+    const cart = JSON.parse(localStorage.getItem('cart') || '[]');
+
+    if (cart.length === 0) {
+        const emptyRow = document.createElement('tr');
+        emptyRow.innerHTML = `<td colspan="4" style="text-align:center;">Your cart is empty</td>`;
+        checkoutTable.appendChild(emptyRow);
+    } else {
+        let total = 0;
+        cart.forEach(item => {
+            const row = document.createElement('tr');
+            const itemTotal = item.price * item.qty;
+            total += itemTotal;
+            row.innerHTML = `
+                <td>${item.name}</td>
+                <td>$${item.price.toFixed(2)}</td>
+                <td>${item.qty}</td>
+                <td>$${itemTotal.toFixed(2)}</td>
+            `;
+            checkoutTable.appendChild(row);
+        });
+        checkoutTotal.innerText = total.toFixed(2);
+    }
+
+    document.getElementById('payBtn').addEventListener('click', () => {
+        if(cart.length === 0) {
+            alert('Cart is empty!');
+            return;
+        }
+        alert('Payment completed!');
+        localStorage.removeItem('cart');
+        location.reload();
+    });
+});
+</script>
+{% endblock %}

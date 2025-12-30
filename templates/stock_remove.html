@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title> ដកស្តុក </title>
+
+    <!-- External styles for dark UI -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/stock_remove.css') }}">
+</head>
+<body>
+
+    <!-- Top navigation -->
+    <div class="top-nav">
+        <a class="back-link" href="{{ url_for('index') }}">← Dashboard</a>
+    </div>
+
+    <!-- Main card -->
+    <div class="card">
+        <h1>ដកស្តុក</h1>
+        <div class="subtitle">
+          ដកចេញពីស្តុក (ខូច / ផុតកំណត់ / staff យកប្រើ)
+        </div>
+
+        <!-- Barcode scan / auto search -->
+        <div class="row">
+            <label for="barcodeInput">ស្កេន Barcode / Scan Barcode</label>
+            <div class="barcode-row">
+                <input
+                    id="barcodeInput"
+                    type="text"
+                    placeholder="scan or type barcode... then Enter to load"
+                    autocomplete="off"
+                />
+            </div>
+            <div class="tip-text">
+            </div>
+        </div>
+
+        <!-- Product dropdown (manual fallback) -->
+        <div class="row">
+            <label for="productSelect">ទំនិញ / Product</label>
+            <select id="productSelect">
+                <option value="">-- choose product --</option>
+                {% for p in products %}
+                <option value="{{ p['id'] }}">
+                    {{ p['name'] }}{% if p['barcode'] %} ({{ p['barcode'] }}){% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <!-- Product info panel -->
+        <div class="row">
+            <div class="stock-info" id="stockInfo">
+                <span class="name">Product: —</span>
+                <span class="barcode">Barcode: —</span>
+                <span class="qty">ស្តុកនៅសល់: —</span>
+            </div>
+        </div>
+
+        <!-- Quick add row -->
+        <div class="row-inline quick-row">
+            <div class="col-qty">
+              <label for="amountInput">ចំនួនដក / Amount</label>
+              <input id="amountInput" type="number" min="1" placeholder="e.g. 3">
+            </div>
+            <div class="col-reason">
+              <label for="reasonInput">មូលហេតុ / Reason</label>
+              <textarea id="reasonInput" rows="1" placeholder="expired / broke / staff use / ..."></textarea>
+            </div>
+            <div class="col-staff">
+              <label for="staffInput">អ្នកដក / Staff</label>
+              <input id="staffInput" type="text" placeholder="e.g. Dara / SreyNeang">
+            </div>
+            <div class="actions-inline">
+              <button class="btn-secondary" id="addToListBtn"> បន្ថែមitem</button>
+              <button class="remove-btn" id="removeBtn"> ផ្ញើទៅ (តែមួយ)</button>
+            </div>
+        </div>
+
+        <!-- Result / status -->
+        <div id="resultMsg" class="result-msg is-hidden"></div>
+
+        <div class="divider"></div>
+
+        <!-- Removal list (batch) -->
+        <h2 class="section-title">Removal List <span class="muted tiny">(queue)</span></h2>
+        
+
+        <table class="list-table" id="listTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Product</th>
+              <th>Barcode</th>
+              <th class="right">Qty</th>
+              <th>Reason</th>
+              <th>Staff</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="listBody">
+            <!-- rows injected -->
+          </tbody>
+        </table>
+
+        <div class="totals">
+          <div class="muted">Items in list: <span id="itemCount">0</span></div>
+          <div class="muted">Total Qty: <span id="totalQty">0</span></div>
+        </div>
+
+        <div class="actions-row">
+          <button class="btn-secondary" id="clearListBtn"> Clear List</button>
+          <button class="remove-btn" id="submitAllBtn"> Submit All</button>
+        </div>
+    </div>
+
+<script>
+// =========================
+// Grab elements
+// =========================
+const productSelect    = document.getElementById('productSelect');
+const barcodeInput     = document.getElementById('barcodeInput');
+const stockInfo        = document.getElementById('stockInfo');
+const amountInput      = document.getElementById('amountInput');
+const reasonInput      = document.getElementById('reasonInput');
+const staffInput       = document.getElementById('staffInput');
+const removeBtn        = document.getElementById('removeBtn');
+const addToListBtn     = document.getElementById('addToListBtn');
+const resultMsgEl      = document.getElementById('resultMsg');
+
+const listBody         = document.getElementById('listBody');
+const itemCountEl      = document.getElementById('itemCount');
+const totalQtyEl       = document.getElementById('totalQty');
+const clearListBtn     = document.getElementById('clearListBtn');
+const submitAllBtn     = document.getElementById('submitAllBtn');
+
+let currentProduct = null;      // {id, name, barcode, qty}
+let barcodeTimer   = null;      // debounce timer for auto-search
+let removalList    = [];        // [{product_id, name, barcode, qty, reason, staff_name, knownStock}]
+
+// =========================
+// UI helper functions
+// =========================
+function renderProductInfo(prod) {
+    if (!prod) {
+        stockInfo.querySelector('.name').textContent    = "Product: —";
+        stockInfo.querySelector('.barcode').textContent = "Barcode: —";
+        stockInfo.querySelector('.qty').textContent     = "Current Stock: —";
+        return;
+    }
+    stockInfo.querySelector('.name').textContent    = "Product: " + prod.name;
+    stockInfo.querySelector('.barcode').textContent = "Barcode: " + (prod.barcode || "—");
+    stockInfo.querySelector('.qty').textContent     = "Current Stock: " + prod.qty;
+}
+
+function showError(msg) {
+    resultMsgEl.style.display = "block";
+    resultMsgEl.className = "result-msg result-err";
+    resultMsgEl.textContent = "❌ " + msg;
+}
+
+function showOK(msg) {
+    resultMsgEl.style.display = "block";
+    resultMsgEl.className = "result-msg result-ok";
+    resultMsgEl.textContent = "✅ " + msg;
+}
+
+function hideMsg() {
+    resultMsgEl.style.display = "none";
+}
+
+// select correct <option> in dropdown when we know product.id
+function selectProductInDropdown(productId) {
+    const opts = productSelect.options;
+    for (let i = 0; i < opts.length; i++) {
+        if (String(opts[i].value) === String(productId)) {
+            productSelect.selectedIndex = i;
+            return;
+        }
+    }
+}
+
+// =========================
+// Fetch product helpers
+// =========================
+async function fetchProductById(pid) {
+    currentProduct = null;
+    renderProductInfo(null);
+    if (!pid) return;
+
+    try {
+        const r = await fetch(`/api/product/${pid}`);
+        const data = await r.json();
+
+        if (data.success) {
+            currentProduct = data.product;
+            renderProductInfo(currentProduct);
+
+            // sync barcode input field when selecting manually
+            barcodeInput.value = currentProduct.barcode || "";
+            showOK("Product loaded ✅");
+        } else {
+            showError("Product not found");
+        }
+    } catch (err) {
+        showError("Network error");
+    }
+}
+
+async function fetchProductByBarcode(code) {
+    currentProduct = null;
+    renderProductInfo(null);
+    if (!code) return;
+
+    try {
+        const r = await fetch(`/api/product/barcode/${encodeURIComponent(code)}`);
+        const data = await r.json();
+
+        if (data.success) {
+            currentProduct = data.product;
+            renderProductInfo(currentProduct);
+            selectProductInDropdown(currentProduct.id);
+            showOK("Product loaded ✅");
+        } else {
+            showError("No product with that barcode");
+        }
+    } catch (err) {
+        showError("Network error searching barcode");
+    }
+}
+
+// =========================
+function renderRemovalList() {
+    listBody.innerHTML = "";
+    let totalQty = 0;
+
+    removalList.forEach((item, idx) => {
+        totalQty += item.qty;
+
+        const tr = document.createElement("tr");
+
+        tr.innerHTML = `
+          <td>${idx+1}</td>
+          <td>${item.name}</td>
+          <td class="muted">${item.barcode || "—"}</td>
+          <td class="right">
+            <input type="number" min="1" value="${item.qty}" data-idx="${idx}" class="qty-input">
+            ${item.knownStock >= 0 ? `<div class="tiny muted">max: ${item.knownStock}</div>` : ""}
+          </td>
+          <td>
+            <textarea rows="1" data-idx="${idx}" class="reason-input">${item.reason || ""}</textarea>
+          </td>
+          <td>
+            <input type="text" value="${item.staff_name || ""}" data-idx="${idx}" class="staff-input">
+          </td>
+          <td class="right">
+            <button class="btn-danger" data-idx="${idx}" title="Remove row">✖</button>
+          </td>
+        `;
+
+        if (item.knownStock >= 0 && item.qty > item.knownStock) {
+            tr.classList.add("ghost");
+        }
+
+        listBody.appendChild(tr);
+    });
+
+    itemCountEl.textContent = removalList.length;
+    totalQtyEl.textContent  = totalQty;
+
+    listBody.querySelectorAll(".btn-danger").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const i = Number(btn.dataset.idx);
+            removalList.splice(i, 1);
+            renderRemovalList();
+        });
+    });
+    listBody.querySelectorAll(".qty-input").forEach(inp => {
+        inp.addEventListener("input", e => {
+            const i = Number(inp.dataset.idx);
+            const v = Math.max(1, parseInt(e.target.value || "1", 10));
+            removalList[i].qty = v;
+            renderRemovalList();
+        });
+    });
+    listBody.querySelectorAll(".reason-input").forEach(inp => {
+        inp.addEventListener("input", e => {
+            const i = Number(inp.dataset.idx);
+            removalList[i].reason = e.target.value.trim();
+        });
+    });
+    listBody.querySelectorAll(".staff-input").forEach(inp => {
+        inp.addEventListener("input", e => {
+            const i = Number(inp.dataset.idx);
+            removalList[i].staff_name = e.target.value.trim();
+        });
+    });
+}
+
+function addCurrentToList() {
+    const pid = productSelect.value;
+    const amt = parseInt(amountInput.value || "0", 10);
+    const rsn = reasonInput.value.trim();
+    const staffName = staffInput.value.trim();
+
+    if (!pid) return showError("Please choose product first");
+    if (!amt || amt <= 0) return showError("Amount must be > 0");
+    if (!staffName) return showError("Please enter staff name");
+
+    if (currentProduct && amt > currentProduct.qty) {
+        return showError("Not enough stock. You only have " + currentProduct.qty);
+    }
+
+    const keyMatch = removalList.findIndex(
+        x => String(x.product_id) === String(pid) &&
+             (x.reason || "") === rsn &&
+             (x.staff_name || "") === staffName
+    );
+
+    if (keyMatch >= 0) {
+        removalList[keyMatch].qty += amt;
+    } else {
+        removalList.push({
+            product_id: parseInt(pid, 10),
+            name: currentProduct ? currentProduct.name : productSelect.options[productSelect.selectedIndex]?.text || ("ID " + pid),
+            barcode: currentProduct ? currentProduct.barcode : (barcodeInput.value.trim() || ""),
+            qty: amt,
+            reason: rsn,
+            staff_name: staffName,
+            knownStock: currentProduct ? Number(currentProduct.qty) : -1
+        });
+    }
+
+    amountInput.value = "";
+    hideMsg();
+    renderRemovalList();
+}
+
+// =========================
+// Network submit helpers
+// =========================
+async function submitBatch(items) {
+    try {
+        const r = await fetch("/api/stock/remove/batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                items: items.map(x => ({
+                    product_id: x.product_id,
+                    amount: x.qty,
+                    reason: x.reason,
+                    staff_name: x.staff_name
+                }))
+            })
+        });
+
+        if (r.ok) {
+            const data = await r.json();
+            if (data.success) return { ok: true, data };
+        }
+    } catch (e) {}
+
+    const results = await Promise.allSettled(items.map(async x => {
+        const rr = await fetch("/api/stock/remove", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                product_id: x.product_id,
+                amount: x.qty,
+                reason: x.reason,
+                staff_name: x.staff_name
+            })
+        });
+        const jd = await rr.json().catch(() => ({}));
+        return { item: x, response: jd, status: rr.status };
+    }));
+
+    const summary = { success: [], failed: [] };
+    results.forEach(res => {
+        if (res.status === "fulfilled" && res.value?.response?.success) {
+            summary.success.push(res.value);
+        } else {
+            summary.failed.push(res.reason || res.value);
+        }
+    });
+
+    return { ok: summary.failed.length === 0, data: summary };
+}
+
+// =========================
+// Event listeners
+// =========================
+productSelect.addEventListener('change', () => {
+    const pid = productSelect.value;
+    fetchProductById(pid);
+});
+
+barcodeInput.addEventListener('input', () => {
+    if (barcodeTimer) clearTimeout(barcodeTimer);
+    barcodeTimer = setTimeout(() => {
+        const code = barcodeInput.value.trim();
+        fetchProductByBarcode(code);
+    }, 300);
+});
+
+barcodeInput.addEventListener('keydown', (e) => {
+    if (e.key === "Enter") {
+        e.preventDefault();
+        if (barcodeTimer) clearTimeout(barcodeTimer);
+        const code = barcodeInput.value.trim();
+        fetchProductByBarcode(code);
+
+        setTimeout(() => {
+          if (currentProduct && (!amountInput.value || Number(amountInput.value) <= 0) && staffInput.value.trim()) {
+              amountInput.value = "1";
+              addCurrentToList();
+          }
+        }, 50);
+    }
+});
+
+removeBtn.addEventListener('click', async () => {
+    const pid = productSelect.value;
+    const amt = parseInt(amountInput.value || "0", 10);
+    const rsn = reasonInput.value.trim();
+    const staffName = staffInput.value.trim();
+
+    if (!pid) return showError("Please choose product first");
+    if (!amt || amt <= 0) return showError("Amount must be > 0");
+    if (!staffName) return showError("Please enter staff name");
+    if (currentProduct && amt > currentProduct.qty) {
+        return showError("Not enough stock. You only have " + currentProduct.qty);
+    }
+
+    try {
+        const r = await fetch("/api/stock/remove", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                product_id: parseInt(pid,10),
+                amount: amt,
+                reason: rsn,
+                staff_name: staffName
+            })
+        });
+
+        const data = await r.json();
+
+        if (!data.success) {
+            return showError(data.error || "Error removing stock");
+        }
+
+        showOK(
+            `Removed ${amt} from product ID ${data.product_id}. ` +
+            `Old: ${data.old_qty}, New: ${data.new_qty}`
+        );
+
+        if (currentProduct && String(currentProduct.id) === String(data.product_id)) {
+            currentProduct.qty = data.new_qty;
+            renderProductInfo(currentProduct);
+        }
+
+        amountInput.value = "";
+    } catch (err) {
+        showError("Network error while removing");
+    }
+});
+
+addToListBtn.addEventListener('click', () => {
+    addCurrentToList();
+});
+
+clearListBtn.addEventListener('click', () => {
+    removalList = [];
+    renderRemovalList();
+    hideMsg();
+});
+
+submitAllBtn.addEventListener('click', async () => {
+    if (removalList.length === 0) return showError("Your list is empty");
+
+    const over = removalList.filter(x => x.knownStock >= 0 && x.qty > x.knownStock);
+    if (over.length) {
+        return showError(`Some rows exceed current stock (rows highlighted). Please adjust.`);
+    }
+
+    submitAllBtn.disabled = true;
+    submitAllBtn.textContent = "Submitting…";
+
+    const res = await submitBatch(removalList);
+
+    submitAllBtn.disabled = false;
+    submitAllBtn.textContent = "🚚 Submit All";
+
+    if (res.ok) {
+        showOK("Batch removal completed successfully ✅");
+        removalList = [];
+        renderRemovalList();
+
+        if (currentProduct?.id) fetchProductById(currentProduct.id);
+    } else {
+        showError("Some items failed to remove. Please review and try again.");
+        console.warn(res.data);
+    }
+});
+</script>
+
+<div class="credit">
+  Made with by <span class="credit-name">Reach</span>
+</div>
+
+</body>
+</html>

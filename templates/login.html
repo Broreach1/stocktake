@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      margin: 0;
+      padding: 0;
+      background: linear-gradient(135deg, #a18cd1, #fbc2eb);
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .login-container {
+      max-width: 380px;
+      width: 100%;
+      background: #fff;
+      border-radius: 20px;
+      box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+      padding: 30px;
+      text-align: center;
+      animation: fadeIn 0.8s ease-in-out;
+    }
+
+    .login-logo img {
+      width: 90px;
+      margin-bottom: 15px;
+      animation: float 3s ease-in-out infinite;
+    }
+
+    .flash-messages {
+      background: #ffe6e6;
+      border: 1px solid #ff4d4d;
+      color: #b30000;
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 15px;
+      text-align: left;
+      animation: shake 0.3s;
+    }
+
+    .login-form {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+
+    .login-form label {
+      text-align: left;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: #444;
+    }
+
+    .login-form input {
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      font-size: 1rem;
+      transition: all 0.2s ease;
+    }
+
+    .login-form input:focus {
+      border-color: #a18cd1;
+      box-shadow: 0 0 6px rgba(161,140,209,0.4);
+      outline: none;
+      transform: scale(1.02);
+    }
+
+    .btn-primary {
+      padding: 12px;
+      border: none;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #a18cd1, #fbc2eb);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 15px rgba(161,140,209,0.3);
+    }
+
+    .login-register {
+      margin-top: 18px;
+      font-size: 0.9rem;
+      color: #555;
+    }
+
+    .login-register a {
+      color: #a18cd1;
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .login-register a:hover {
+      text-decoration: underline;
+    }
+
+    /* Animations */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-8px); }
+    }
+
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-4px); }
+      75% { transform: translateX(4px); }
+    }
+
+    @media (max-width: 480px) {
+      .login-container {
+        margin: 0 15px;
+        padding: 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<div class="login-container">
+  <!-- Logo -->
+  <div class="login-logo">
+    <img src="{{ url_for('static', filename='logo.png') }}" alt="Logo">
+  </div>
+
+  <!-- Flash messages -->
+<!-- Flash messages -->
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    <div class="flash-popup">
+      {% for msg in messages %}
+        <p>{{ msg }}</p>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endwith %}
+
+<style>
+.flash-popup {
+  background: #ffe6e6;
+  border: 1px solid #ff4d4d;
+  color: #b30000;
+  padding: 12px 16px;
+  border-radius: 10px;
+  margin-bottom: 18px;
+  font-weight: 500;
+  animation: popupIn 0.5s ease, shake 0.4s ease;
+  box-shadow: 0 6px 15px rgba(255,0,0,0.2);
+}
+
+.flash-popup p {
+  margin: 0;
+}
+
+/* Smooth pop-in */
+@keyframes popupIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Cute little shake */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  50% { transform: translateX(5px); }
+  75% { transform: translateX(-3px); }
+}
+</style>
+
+
+  <!-- Login Form -->
+  <form method="POST" class="login-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" required>
+
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required>
+
+    <button type="submit" class="btn-primary">Login</button>
+  </form>
+
+  <p class="login-register">
+    Don’t have an account? <a href="{{ url_for('register') }}">Register here</a>
+  </p>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,118 @@
+/* ------------------ Global ------------------ */
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #f5f6fa;
+  margin: 0;
+  padding: 0;
+  color: #333;
+}
+
+/* ------------------ Container ------------------ */
+.container {
+  max-width: 100%;
+  margin: 5px auto;
+  padding: 5px;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+  overflow-x: auto;
+}
+
+/* ------------------ Headings ------------------ */
+h1 {
+  font-size: 1.5rem;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+/* ------------------ Table ------------------ */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+th, td {
+  padding: 6px 8px;
+  text-align: left;
+  word-break: break-word;
+}
+
+th {
+  background-color: #f0f2f5;
+  color: #333;
+}
+
+tr {
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.low-stock {
+  background-color: #ffe6e6 !important;
+}
+
+/* ------------------ Buttons ------------------ */
+button {
+  background-color: #1e90ff;
+  color: #fff;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin: 3px 0;
+  width: 100%;
+}
+
+button:hover {
+  background-color: #0d6efd;
+  transform: translateY(-1px);
+}
+
+/* ------------------ Inputs ------------------ */
+input[type="number"],
+input[type="text"],
+select {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 6px;
+}
+
+/* ------------------ Modal ------------------ */
+#productModal {
+  width: 95%;
+  max-width: 400px;
+  padding: 15px;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+  position: fixed;
+  top: 10%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+}
+
+#productModal h2 {
+  font-size: 1.2rem;
+  margin-bottom: 10px;
+}
+
+/* ------------------ Responsive ------------------ */
+@media (max-width: 768px) {
+  table { font-size: 0.8rem; }
+  th, td { padding: 5px; }
+  #productModal { top: 5%; width: 95%; padding: 10px; }
+}
+
+@media (max-width: 480px) {
+  h1 { font-size: 1.3rem; }
+  table { font-size: 0.75rem; }
+  th, td { padding: 4px 6px; }
+  input[type="number"], input[type="text"], select { font-size: 0.85rem; }
+  #productModal h2 { font-size: 1rem; }
+}

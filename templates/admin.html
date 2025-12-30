@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    /* ------------------ Global ------------------ */
+    body {
+      font-family: 'Inter', sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #f5f6fa;
+      color: #333;
+    }
+    a { text-decoration: none; }
+
+    /* ------------------ Dashboard Container ------------------ */
+    .dashboard-container {
+        max-width: 1200px;
+        margin: 20px auto;
+    }
+
+    /* ------------------ Heading ------------------ */
+    h1 { 
+        font-size: 2rem; 
+        margin-bottom: 25px; 
+        text-align: center;
+    }
+
+    /* ------------------ Export & actions row ------------------ */
+    .export-buttons {
+        margin-bottom: 25px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 15px;
+        justify-content: center;
+        align-items: center;
+    }
+
+    /* ------------------ Buttons ------------------ */
+    .btn-primary, .btn-danger, .btn-back, .btn-clear {
+        display: inline-block;
+        padding: 8px 14px;
+        border-radius: 8px;
+        text-decoration: none;
+        color: #fff;
+        font-weight: 500;
+        transition: background 0.3s, transform 0.2s;
+    }
+    .btn-primary {
+        background: linear-gradient(90deg, #4f46e5, #6366f1);
+    }
+    .btn-primary:hover {
+        background: linear-gradient(90deg, #6366f1, #4f46e5);
+        transform: translateY(-2px);
+    }
+    .btn-danger {
+        background: #ef4444;
+        border: none;
+        cursor: pointer;
+    }
+    .btn-danger:hover {
+        background: #dc2626;
+        transform: translateY(-2px);
+    }
+    .btn-back {
+        background: #1e90ff;
+        margin-bottom: 20px;
+    }
+    .btn-back:hover {
+        background: #0d6efd;
+        transform: translateY(-2px);
+    }
+    .btn-clear {
+        background: #64748b;
+        cursor: pointer;
+    }
+    .btn-clear:hover {
+        background: #475569;
+        transform: translateY(-2px);
+    }
+
+    /* ------------------ New: Search UI ------------------ */
+    .search-wrap {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin: 0 auto 10px;
+        max-width: 800px;
+    }
+    .search-input {
+        flex: 1 1 340px;
+        min-width: 260px;
+        padding: 10px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 10px;
+        background: #fff;
+        font-size: 0.95rem;
+        outline: none;
+        transition: box-shadow .2s, border-color .2s;
+    }
+    .search-input:focus {
+        border-color: #6366f1;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, .15);
+    }
+    .search-help {
+        text-align: center;
+        color: #6b7280;
+        font-size: 0.9rem;
+        margin-bottom: 15px;
+    }
+    .match-count {
+        text-align: center;
+        color: #374151;
+        font-size: 0.9rem;
+        margin-bottom: 12px;
+    }
+    mark {
+        background: #fef08a;
+        padding: 0 2px;
+        border-radius: 3px;
+    }
+
+    /* ------------------ Card styling ------------------ */
+    .card {
+        background: #fff;
+        padding: 25px;
+        border-radius: 12px;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+        margin-bottom: 30px;
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 10px 25px rgba(0,0,0,0.12);
+    }
+
+    /* ------------------ Table wrapper ------------------ */
+    .table-wrapper { 
+        overflow-x: auto; 
+        margin-top: 15px; 
+    }
+
+    /* ------------------ Table styling ------------------ */
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.95rem;
+    }
+    th, td {
+        padding: 12px 15px;
+        border-bottom: 1px solid #e5e7eb;
+        text-align: left;
+        vertical-align: top;
+    }
+    thead th {
+        background-color: #f3f4f6;
+        font-weight: 600;
+        color: #374151;
+    }
+    tr:hover { 
+        background-color: #f9fafb; 
+        transition: 0.2s; 
+    }
+
+    /* ------------------ Low stock highlight ------------------ */
+    .low-stock {
+        background-color: #fee2e2 !important;
+        font-weight: bold;
+        color: #b91c1c;
+    }
+
+    /* ------------------ Responsive ------------------ */
+    @media (max-width: 768px){
+        table, th, td { font-size: 0.8rem; }
+        .btn-primary, .btn-danger { padding: 6px 12px; font-size: 0.8rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="dashboard-container">
+
+    <h1>Admin Dashboard</h1>
+
+    <!-- Back to Products -->
+    <div class="export-buttons">
+        <a href="{{ url_for('products_page') }}" class="btn-back">⬅ Back to Products</a>
+    </div>
+
+    <!-- Export Buttons -->
+    <div class="export-buttons">
+        <a href="{{ url_for('export_users') }}" class="btn-primary">Export Users</a>
+        <a href="{{ url_for('export_products') }}" class="btn-primary">Export Products</a>
+    </div>
+
+    <!-- Users Table -->
+    <div class="card">
+        <h2>Users</h2>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>Role</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td>{{ user.id }}</td>
+                        <td>{{ user.username }}</td>
+                        <td>{{ user.role }}</td>
+                        <td>
+                            {% if user.username != "admin" %}
+                            <form method="POST" action="{{ url_for('delete_user', id=user.id) }}" class="inline-form" onsubmit="return confirm('Are you sure you want to delete {{ user.username }}?');">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <button type="submit" class="btn-danger">Delete</button>
+                            </form>
+                            {% else %}
+                            <span class="protected-text">Protected</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Products Table + Barcode Search -->
+    <div class="card">
+        <h2>Products</h2>
+
+        <!-- Search controls -->
+        <div class="search-wrap">
+            <input id="barcodeSearch" class="search-input" type="text" placeholder="Search by Barcode / Name / SKU… (scan or type)">
+            <button id="clearSearch" class="btn-clear" type="button">Clear</button>
+        </div>
+        <div class="search-help">Tip: You can scan a barcode or type partial digits (e.g., “09655” will match “8994834009655”).</div>
+        <div id="matchCount" class="match-count"></div>
+
+        <div class="table-wrapper">
+            <table id="productsTable">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>User ID</th>
+                        <th>SKU</th>
+                        <th>Name</th>
+                        <th>Price</th>
+                        <th>Cost</th>
+                        <th>Qty</th>
+                        <th>Min Qty</th>
+                        <th>Barcode</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in products %}
+                    <tr {% if (p.qty or 0) < (p.min_qty or 0) %}class="low-stock"{% endif %}>
+                        <td>{{ p.id }}</td>
+                        <td>{{ p.user_id }}</td>
+                        <td class="cell-sku">{{ p.sku }}</td>
+                        <td class="cell-name">{{ p.name }}</td>
+                        <td>{{ "%.2f"|format(p.price or 0) }}</td>
+                        <td>{{ "%.2f"|format(p.cost or 0) }}</td>
+                        <td>{{ p.qty or 0 }}</td>
+                        <td>{{ p.min_qty or 0 }}</td>
+                        <td class="cell-barcode">{{ p.barcode }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
+<script>
+(function(){
+  const input = document.getElementById('barcodeSearch');
+  const clearBtn = document.getElementById('clearSearch');
+  const matchCount = document.getElementById('matchCount');
+  const table = document.getElementById('productsTable');
+  const rows = Array.from(table.querySelectorAll('tbody tr'));
+
+  // Remove previous <mark> tags in a cell
+  function unmarkCell(cell){
+    if (!cell) return;
+    cell.innerHTML = cell.textContent;
+  }
+
+  // Add <mark> around matches (case-insensitive)
+  function highlightMatch(cell, query){
+    if (!cell || !query) return;
+    const text = cell.textContent;
+    const idx = text.toLowerCase().indexOf(query.toLowerCase());
+    if (idx === -1) return;
+    const before = text.slice(0, idx);
+    const mid = text.slice(idx, idx + query.length);
+    const after = text.slice(idx + query.length);
+    cell.innerHTML = `${before}<mark>${mid}</mark>${after}`;
+  }
+
+  function filterRows(q){
+    const query = q.trim().toLowerCase();
+    let visible = 0;
+
+    rows.forEach(row => {
+      const skuCell = row.querySelector('.cell-sku');
+      const nameCell = row.querySelector('.cell-name');
+      const codeCell = row.querySelector('.cell-barcode');
+
+      // clear old highlights
+      unmarkCell(skuCell);
+      unmarkCell(nameCell);
+      unmarkCell(codeCell);
+
+      if (!query){
+        row.style.display = '';
+        return;
+      }
+
+      const hay = [
+        skuCell ? skuCell.textContent.toLowerCase() : '',
+        nameCell ? nameCell.textContent.toLowerCase() : '',
+        codeCell ? codeCell.textContent.toLowerCase() : ''
+      ].join(' | ');
+
+      const matched = hay.includes(query);
+      row.style.display = matched ? '' : 'none';
+
+      if (matched){
+        visible++;
+        // highlight where it matches; prefer barcode, then name, then SKU
+        if (codeCell && codeCell.textContent.toLowerCase().includes(query)) {
+          highlightMatch(codeCell, query);
+        } else if (nameCell && nameCell.textContent.toLowerCase().includes(query)) {
+          highlightMatch(nameCell, query);
+        } else if (skuCell && skuCell.textContent.toLowerCase().includes(query)) {
+          highlightMatch(skuCell, query);
+        }
+      }
+    });
+
+    matchCount.textContent = query ? `${visible} result(s)` : '';
+  }
+
+  // Debounce typing & support scanner Enter
+  let timer = null;
+  input.addEventListener('input', () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => filterRows(input.value), 150);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter'){
+      e.preventDefault();
+      if (timer) clearTimeout(timer);
+      filterRows(input.value);
+    }
+  });
+
+  clearBtn.addEventListener('click', () => {
+    input.value = '';
+    filterRows('');
+    input.focus();
+  });
+
+  // Auto-focus for scan guns
+  window.addEventListener('load', () => {
+    input.focus({ preventScroll: true });
+  });
+})();
+</script>
+</body>
+</html>

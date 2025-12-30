@@ -1,0 +1,52 @@
+.container-import {
+    max-width: 600px;
+    margin: 50px auto;
+    padding: 20px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    background: #f9f9f9;
+}
+
+.container-import h1 {
+    text-align: center;
+}
+
+.flash-messages {
+    color: red;
+    list-style-type: none;
+    padding: 0;
+}
+
+.form-upload {
+    margin-top: 20px;
+}
+
+.form-upload input[type="file"] {
+    width: 100%;
+    padding: 8px;
+}
+
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-block;
+}
+
+.btn-submit {
+    background: #4CAF50;
+    color: white;
+}
+
+.btn-cancel {
+    background: #f44336;
+    color: white;
+}
+
+.note {
+    margin-top: 20px;
+    font-size: 0.9em;
+    color: #555;
+}

@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="km">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ផ្ទាំងគ្រប់គ្រង – Reach</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Khmer:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+:root{
+  --bg: linear-gradient(135deg,#ffd1ff 0%,#f0f4ff 30%,#d9f6ff 60%,#ffe9d2 100%);
+  --tile-radius: 18px;
+  --card-radius: 26px;
+  --text-dark:#1e293b;
+  --text-mid:#64748b;
+  --glow: 0 20px 60px rgba(0,0,0,.14);
+}
+
+/* Reset + base */
+*{box-sizing:border-box}
+html,body{height:100%}
+html{scroll-behavior:smooth}
+body{
+  margin:0;
+  font-family:'Noto Sans Khmer','Khmer OS Battambang',system-ui,Arial,sans-serif;
+  color:var(--text-dark);
+  background:var(--bg);
+  background-attachment: fixed;
+  display:flex; align-items:center; justify-content:center;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+  overflow:auto;                    /* allow scroll on small screens */
+  min-height:100dvh;                /* mobile viewport height fix */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* soft blobs (lighter on mobile) */
+.blob{
+  position:fixed; filter: blur(30px); opacity:.28; z-index:0;
+  animation: float 12s ease-in-out infinite;
+  will-change: transform;
+}
+.blob.b1{width:360px;height:360px;left:-80px;top:-60px;background:#ffb3c7;}
+.blob.b2{width:320px;height:320px;right:-60px;bottom:-80px;background:#a8e1ff;animation-delay:1.2s;}
+.blob.b3{width:260px;height:260px;left:50%;top:75%;transform:translateX(-50%);background:#c9ffd9;animation-delay:2s;}
+
+@keyframes float{
+  0%,100%{transform:translateY(0) scale(1)}
+  50%{transform:translateY(-14px) scale(1.02)}
+}
+
+/* layout wrapper with safe-area padding */
+.wrap{
+  position:relative; z-index:1;
+  width:min(960px,100%);
+  padding:16px;
+  padding-left: max(16px, env(safe-area-inset-left));
+  padding-right:max(16px, env(safe-area-inset-right));
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+
+/* glass card */
+.card{
+  position:relative;
+  background: rgba(255,255,255,.6);
+  border:1px solid rgba(255,255,255,.45);
+  border-radius: var(--card-radius);
+  box-shadow: var(--glow);
+  padding:18px;                     /* tighter on phones */
+  -webkit-backdrop-filter: blur(10px);
+          backdrop-filter: blur(10px);
+  overflow:hidden;
+  animation: pop .7s ease both;
+}
+@keyframes pop{
+  from{opacity:0; transform:translateY(18px) scale(.98)}
+  to{opacity:1; transform:translateY(0) scale(1)}
+}
+
+/* header */
+.head{
+  display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap;
+  margin-bottom:14px;
+}
+.brand{display:flex; align-items:center; gap:10px;}
+.logo{
+  width:42px;height:42px;border-radius:14px;
+  background: linear-gradient(135deg,#8ec5fc,#e0c3fc 60%,#fce1ff);
+  display:grid;place-items:center;
+  box-shadow: 0 6px 20px rgba(140, 110, 255, .30);
+}
+.logo span{font-size:18px}
+
+/* fluid titles */
+.title{
+  line-height:1.1;
+  font-weight:800;
+  font-size: clamp(1.15rem, 1rem + 1.2vw, 1.6rem);
+  background: linear-gradient(90deg,#7c3aed,#06b6d4,#22c55e);
+  -webkit-background-clip:text; background-clip:text;
+  -webkit-text-fill-color:transparent;
+  letter-spacing:.2px;
+}
+.subtitle{
+  font-size: clamp(.9rem, .85rem + .4vw, .98rem);
+  color:var(--text-mid)
+}
+
+/* actions */
+.right-actions{display:flex; gap:8px; flex-wrap:wrap}
+.pill{
+  font-weight:700; font-size:.95rem;
+  padding:10px 14px; border-radius:999px; border:1px solid rgba(0,0,0,.06);
+  background: rgba(255,255,255,.75);
+  -webkit-backdrop-filter: blur(8px);
+          backdrop-filter: blur(8px);
+  text-decoration:none; color:var(--text-dark);
+  transition: transform .2s ease, box-shadow .2s ease;
+  touch-action: manipulation;
+}
+.pill:active{transform:translateY(1px)}
+.pill:hover{ transform:translateY(-2px); box-shadow:0 8px 18px rgba(0,0,0,.08);}
+
+/* grid — MOBILE FIRST */
+.grid{
+  display:grid; gap:12px; margin-top:8px;
+  grid-template-columns: 1fr;                 /* phones */
+}
+
+/* tiles */
+.tile{
+  position:relative;
+  display:flex; flex-direction:column; gap:10px;
+  text-decoration:none; color:#0b1220;
+  background:#fff;
+  border-radius: var(--tile-radius);
+  padding:14px;
+  border:1px solid rgba(0,0,0,.06);
+  box-shadow: 0 6px 16px rgba(0,0,0,.06);
+  transition: transform .2s ease, box-shadow .2s ease;
+  isolation:isolate;
+  min-height:96px;                              /* comfortable tap area */
+}
+.tile:active{transform:translateY(1px)}
+.tile:hover{ transform: translateY(-2px); box-shadow:0 12px 22px rgba(0,0,0,.12); }
+.tile .icon{
+  width:42px;height:42px;border-radius:14px; display:grid;place-items:center;
+  font-size:20px; color:#fff; box-shadow:0 8px 20px rgba(0,0,0,.18);
+}
+.tile h3{margin:0;font-size:1.02rem}
+.tile p{margin:0;color:var(--text-mid);font-size:.9rem}
+
+/* icon gradients */
+.t1 .icon{ background: linear-gradient(135deg,#60a5fa,#34d399);}
+.t2 .icon{ background: linear-gradient(135deg,#f472b6,#fb923c);}
+.t3 .icon{ background: linear-gradient(135deg,#a78bfa,#22d3ee);}
+.t4 .icon{ background: linear-gradient(135deg,#f97316,#fde047); color:#2c2c2c;}
+.t5 .icon{ background: linear-gradient(135deg,#22c55e,#86efac);}
+.t6 .icon{ background: linear-gradient(135deg,#06b6d4,#67e8f9);}
+.t7 .icon{ background: linear-gradient(135deg,#e879f9,#fda4af);}
+.t8 .icon{ background: linear-gradient(135deg,#38bdf8,#818cf8);}
+
+/* footer bar */
+.bar{
+  margin-top:16px;
+  display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end;
+}
+.btn-outline{
+  text-decoration:none; font-weight:800;
+  padding:12px 16px; border-radius:12px;
+  border:2px solid #ef4444; color:#ef4444; background:#fff;
+  transition: all .2s ease;
+  touch-action: manipulation;
+}
+.btn-outline:active{transform:translateY(1px)}
+.btn-outline:hover{ background:#fff0f0; transform:translateY(-2px) }
+
+/* credit */
+.credit{
+  position:absolute; right:16px; bottom:16px;
+  font-size:.92rem; font-weight:700; color:#fff;
+  background: rgba(0,0,0,.25);
+  padding:6px 12px; border-radius:12px;
+  -webkit-backdrop-filter: blur(8px);
+          backdrop-filter: blur(8px);
+  animation: breathe 3.2s ease-in-out infinite;
+}
+@keyframes breathe{
+  0%,100%{ box-shadow:0 0 10px rgba(255,255,255,.35) }
+  50%{ box-shadow:0 0 18px rgba(255,255,255,.6) }
+}
+
+/* reduce motion */
+@media (prefers-reduced-motion: reduce){
+  .blob{animation:none}
+  .card{animation:none}
+  .credit{animation:none}
+  .tile,.pill,.btn-outline{transition:none}
+}
+
+/* -------------------------
+   RESPONSIVE BREAKPOINTS
+   ------------------------- */
+
+/* >= 480px: 2 columns, slightly bigger UI */
+@media (min-width:480px){
+  .grid{ grid-template-columns: repeat(2, 1fr); }
+  .card{ padding:22px; }
+  .logo{ width:44px; height:44px }
+  .tile{ min-height:104px; padding:16px }
+  .tile .icon{ width:44px; height:44px; font-size:21px }
+}
+
+/* >= 640px: relax spacing */
+@media (min-width:640px){
+  .head{ gap:16px; margin-bottom:16px }
+  .pill{ padding:10px 16px }
+}
+
+/* >= 768px: 3 columns */
+@media (min-width:768px){
+  .grid{ grid-template-columns: repeat(3, 1fr); gap:14px }
+  .card{ padding:24px }
+  .tile h3{ font-size:1.06rem }
+}
+
+/* >= 1024px: 4 columns (your original) */
+@media (min-width:1024px){
+  .grid{ grid-template-columns: repeat(4, 1fr); gap:14px }
+  .card{ padding:28px }
+  .logo{ width:46px; height:46px }
+  .tile{ min-height:110px }
+  .tile .icon{ width:44px; height:44px; font-size:22px }
+}
+
+  </style>
+</head>
+<body>
+  <div class="blob b1"></div>
+  <div class="blob b2"></div>
+  <div class="blob b3"></div>
+
+  <main class="wrap">
+    <section class="card">
+      <header class="head">
+        <div class="brand">
+          <div class="logo"><span>🌸</span></div>
+          <div>
+            <div class="title">សូមស្វាគមន៍ 👋</div>
+            <div class="subtitle">សូមជ្រើសរើសមុខងារដើម្បីចាប់ផ្តើម</div>
+          </div>
+        </div>
+        <div class="right-actions">
+          <!-- Keep help external if you want, or point to your own help route -->
+          <a class="pill" href="https://example.com/help" target="_self">ជំនួយ</a>
+          <a class="pill" href="{{ url_for('index') }}">ការកំណត់</a>
+        </div>
+      </header>
+
+      <div class="grid">
+        <a class="tile t1" href="{{ url_for('products_page') }}" title="ទំនិញ">
+          <div class="icon">🛒</div>
+          <h3>ទំនិញ</h3>
+          <p>គ្រប់គ្រងបញ្ជីទំនិញ</p>
+        </a>
+
+        <a class="tile t2" href="{{ url_for('stocktake_page') }}" title="ពិនិត្យស្តុក">
+          <div class="icon">📦</div>
+          <h3>ពិនិត្យស្តុក</h3>
+          <p>រាប់ស្តុក និងកែប្រែ</p>
+        </a>
+
+        <a class="tile t3" href="{{ url_for('stock_remove_page') }}" title="ដកស្តុក">
+          <div class="icon">❌</div>
+          <h3>ដកស្តុក</h3>
+          <p>POS លឿន និងងាយស្រួល</p>
+        </a>
+
+        <!-- Keep your report IP link as-is, or change to url_for if you have a report route -->
+        <a class="tile t4" href="http://192.168.100.52:5600/logs" title="របាយការណ៍">
+          <div class="icon">📊</div>
+          <h3>របាយការណ៍</h3>
+          <p>សរុបលទ្ធផលប្រចាំថ្ងៃ</p>
+        </a>
+
+        <a class="tile t5" href="{{ url_for('index') }}" title="ចំណាយ">
+          <div class="icon">🧾</div>
+          <h3>ចំណាយ</h3>
+          <p>កំណត់ត្រាចំណាយ</p>
+        </a>
+
+        <!-- ✅ Staff page now points to your Flask route -->
+        <a class="tile t6" href="{{ url_for('staff_page') }}" title="បុគ្គលិក">
+          <div class="icon">👩‍🍳</div>
+          <h3>បុគ្គលិក</h3>
+          <p>វេន និងវត្តមាន</p>
+        </a>
+
+        <a class="tile t7" href="{{ url_for('index') }}" title="អ្នកផ្គត់ផ្គង់">
+          <div class="icon">🚚</div>
+          <h3>អ្នកផ្គត់ផ្គង់</h3>
+          <p>បញ្ជាទិញ និងបង់ប្រាក់</p>
+        </a>
+
+        <a class="tile t8" href="{{ url_for('index') }}" title="ការកំណត់">
+          <div class="icon">⚙️</div>
+          <h3>ការកំណត់</h3>
+          <p>កំណត់គោលការណ៍ប្រើប្រាស់</p>
+        </a>
+      </div>
+
+      <div class="bar">
+        <a class="btn-outline" href="{{ url_for('logout') }}" title="ចាក់ចេញ">⏻ ចាក់ចេញ</a>
+      </div>
+
+      <!-- Optional credit badge -->
+      <!-- <div class="credit">Reach</div> -->
+    </section>
+  </main>
+</body>
+</html>

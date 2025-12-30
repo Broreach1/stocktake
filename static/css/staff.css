@@ -1,0 +1,198 @@
+/* ===============================
+   Staff Page – Pastel Modern Theme
+   =============================== */
+
+   :root {
+    --bg: linear-gradient(135deg, #fff5fa 0%, #f3f1ff 50%, #eafff6 100%);
+    --card: #ffffff;
+    --ink: #2c2a34;
+    --muted: #6b7280;
+    --accent: #b388ff;
+    --accent-2: #ff6fa7;
+    --accent-3: #7be3cc;
+    --shadow: 0 6px 18px rgba(179,136,255,0.15);
+    --radius: 18px;
+  }
+  
+  * {
+    box-sizing: border-box;
+  }
+  
+  html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    font-family: 'Noto Sans Khmer', 'Inter', system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+  }
+  
+  /* -------------------------------
+     Header
+  -------------------------------- */
+  .topbar {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 18px 12px;
+    position: relative;
+  }
+  
+  .back-link {
+    position: absolute;
+    left: 16px;
+    top: 18px;
+    text-decoration: none;
+    font-weight: 600;
+    color: var(--accent-2);
+    font-size: 0.95rem;
+    transition: opacity .2s;
+  }
+  .back-link:hover {
+    opacity: 0.75;
+  }
+  
+  h1 {
+    margin: 0;
+    font-size: 1.4rem;
+    text-align: center;
+    color: var(--ink);
+    font-weight: 800;
+  }
+  
+  /* -------------------------------
+     Filter Toolbar
+  -------------------------------- */
+  .toolbar {
+    text-align: center;
+    padding: 0 16px 16px;
+  }
+  .toolbar input {
+    width: 100%;
+    max-width: 340px;
+    padding: 12px 14px;
+    border-radius: var(--radius);
+    border: 2px solid rgba(179,136,255,0.25);
+    font-size: 1rem;
+    outline: none;
+    transition: all .2s ease;
+  }
+  .toolbar input:focus {
+    border-color: var(--accent-2);
+    box-shadow: 0 0 0 6px rgba(255,111,167,.15);
+  }
+  
+  /* -------------------------------
+     Staff Grid
+  -------------------------------- */
+  .container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0 16px 60px;
+  }
+  .staff-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 18px;
+  }
+  .staff-card {
+    background: var(--card);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px;
+    border: 1px solid rgba(179,136,255,0.12);
+    transition: transform .15s ease, box-shadow .2s ease;
+  }
+  .staff-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 20px rgba(179,136,255,0.25);
+  }
+  
+  /* Avatar Circle */
+  .avatar {
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(135deg, var(--accent-2), var(--accent));
+    color: #fff;
+    font-weight: 800;
+    font-size: 1.2rem;
+    box-shadow: 0 4px 10px rgba(255,111,167,.3);
+  }
+  
+  /* Staff Info */
+  .info {
+    display: flex;
+    flex-direction: column;
+  }
+  .name {
+    margin: 0;
+    font-weight: 700;
+    font-size: 1.05rem;
+  }
+  .role {
+    margin: 3px 0 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .contact {
+    margin: 3px 0 0;
+    color: var(--accent-3);
+    font-size: 0.85rem;
+  }
+  
+  /* -------------------------------
+     Empty state
+  -------------------------------- */
+  .muted {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.95rem;
+    margin-top: 24px;
+  }
+  
+  /* -------------------------------
+     Footer
+  -------------------------------- */
+  .credit {
+    text-align: center;
+    margin: 30px 0 16px;
+    font-size: 0.9rem;
+    color: var(--accent);
+    font-weight: 500;
+    animation: fadeIn 1.2s ease;
+  }
+  .credit-name {
+    font-weight: 800;
+    background: linear-gradient(90deg, #ff6fa7, #b388ff, #7be3cc);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: floatName 3s ease-in-out infinite;
+  }
+  
+  @keyframes floatName {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+  }
+  
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  
+  /* -------------------------------
+     Small Screens
+  -------------------------------- */
+  @media (max-width: 480px) {
+    h1 { font-size: 1.2rem; }
+    .avatar { width: 48px; height: 48px; font-size: 1rem; }
+    .staff-card { padding: 14px; }
+    .toolbar input { max-width: 100%; }
+  }
+  

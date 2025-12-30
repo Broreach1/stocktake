@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+
+ <title> 
+  Stocktake   
+</title>
+<!-- Home button -->
+<div class="action-row">
+  <button onclick="window.location.href='products'" class="btn btn-home">Home</button>
+</div>
+
+  <style>
+   /* ------------------ Global ------------------ */
+   body {
+  font-family: 'Inter', sans-serif;
+  margin: 0;
+  padding: 0;
+  background: #f5f6fa;
+  color: #333;
+  .btn-home {
+  background: #1e90ff;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 0.2s, background 0.2s;
+}
+.btn-home:hover {
+  width: 94%;
+  background: #0d6efd;
+  transform: translateY(-2px);
+}
+
+  /* ✅ Prevent mobile text zoom / auto-resize across all OS */
+  -webkit-text-size-adjust: 100%;
+  -moz-text-size-adjust: 100%;
+  -ms-text-size-adjust: 100%;
+  text-size-adjust: 100%;     
+}
+.page-title .title-link {
+  color: inherit;        /* keep same color */
+  text-decoration: none; /* no underline */
+  transition: color 0.2s;
+}
+
+.page-title .title-link:hover {
+  color: #1e90ff;        /* highlight on hover */
+  text-decoration: underline;
+}
+input, select, textarea, button {
+  font-size: 16px; /* ✅ iOS won't zoom */
+}
+
+
+h1, h2, h3 {
+  margin: 0;
+  font-weight: 600;
+}
+
+a { text-decoration: none; color: inherit; }
+
+/* ------------------ Stocktake Container ------------------ */
+.stocktake-container {
+  background: #fff;
+  width: 95%;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 20px auto;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+  max-width: 1000px;
+  animation: fadeIn 0.5s ease;
+}
+
+.page-title {
+  text-align: center;
+  margin-bottom: 20px;
+  font-weight: 600;
+  font-size: 1.4rem;
+}
+
+/* ------------------ Table ------------------ */
+.table-wrapper {
+  overflow-x: auto; /* ✅ scroll on small screens */
+}
+
+.modern-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+}
+
+.modern-table th, 
+.modern-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #eee;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.modern-table th {
+  background: #f0f4ff;
+  font-weight: 600;
+}
+
+.modern-table tr:hover { background: #f9faff; }
+
+.low-stock {
+  background: #ffe6e6 !important;
+  font-weight: bold;
+}
+
+/* ------------------ Inputs ------------------ */
+.countedQty,
+#barcodeSearch {
+  font-size: 16px; /* ✅ prevent iOS zoom */
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #ccc;
+  transition: border 0.2s, box-shadow 0.2s;
+  box-sizing: border-box;
+}
+
+.countedQty:focus,
+#barcodeSearch:focus {
+  border-color: #1e90ff;
+  box-shadow: 0 0 6px rgba(30,144,255,0.3);
+  outline: none;
+}
+
+/* ------------------ Buttons ------------------ */
+.btn {
+  flex: 1;
+  min-width: 100px;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 16px; /* ✅ no zoom on iOS */
+  font-weight: 500;
+  transition: transform 0.2s, background 0.2s;
+}
+
+.btn:hover { transform: translateY(-2px); }
+
+.btn-danger { background: #ff4d4f; }
+.btn-danger:hover { background: #e63946; }
+
+.btn-success { background: #28a745; }
+.btn-success:hover { background: #219638; }
+
+/* ------------------ Action Row ------------------ */
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 15px 0;
+}
+
+.search-row { margin-bottom: 15px; }
+
+/* ------------------ Cute popup ------------------ */
+.popup-alert {
+  position: fixed;
+  top: 20px;
+  right: -300px;
+  background: #1e90ff;
+  color: #fff;
+  padding: 12px 18px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  font-weight: 500;
+  transition: all 0.4s ease;
+  z-index: 9999;
+}
+.popup-alert.show { right: 20px; }
+
+/* ------------------ Draft Toast ------------------ */
+.toast {
+  position: fixed;
+  bottom: -50px;
+  right: 20px;
+  background: #28a745;
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  transition: all 0.4s ease;
+  z-index: 9999;
+}
+.toast.show { bottom: 20px; }
+
+/* ------------------ Responsive ------------------ */
+@media (max-width: 768px) {
+  .btn { width: 100%; } /* Buttons stack on small screens */
+  .action-row { flex-direction: column; }
+}
+
+@media (max-width: 480px) {
+  .page-title { font-size: 1.2rem; }
+  .countedQty, #barcodeSearch { width: 100%; }
+}
+
+/* ------------------ Animation ------------------ */
+@keyframes fadeIn {
+  from {opacity: 0; transform: translateY(10px);}
+  to {opacity: 1; transform: translateY(0);}
+}
+
+  </style>
+</head>
+<body>
+
+<div class="stocktake-container">
+  <h1 class="page-title">Stocktake</h1>
+
+  <!-- Barcode Search -->
+  <div class="action-row search-row">
+    <input type="text" id="barcodeSearch" placeholder="🔍 Scan or enter barcode..." aria-label="Barcode search">
+  </div>
+
+<!-- Table -->
+<div class="table-wrapper">
+  <table id="stockTable" class="modern-table">
+    <thead>
+      <tr>
+        <th>Barcode</th>
+        <th>ឈ្មោះ</th>
+        <th>បានរាប់ចំនួន</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set sorted_products = products|sort(attribute='qty') %}
+      {% for p in sorted_products %}
+      <tr data-product='{{ p|tojson }}' data-barcode="{{ p.barcode }}">
+        <td>{{ p.barcode }}</td>
+        <td>{{ p.name }}</td>
+        <td>
+          <input 
+            type="number" 
+            class="countedQty" 
+            value="{{ p.qty }}" 
+            aria-label="Counted quantity for {{ p.name }}">
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+  <!-- Buttons -->
+  <div class="action-row">
+    <button id="resetBtn" class="btn btn-danger">Reset</button>
+    <button id="saveStocktake" class="btn btn-success">Save</button>
+  </div>
+</div>
+
+<!-- Floating Draft Save Toast -->
+<div id="draftToast" class="toast">💾 Draft saved</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const barcodeInput = document.getElementById('barcodeSearch');
+  const saveBtn = document.getElementById('saveStocktake');
+  const resetBtn = document.getElementById('resetBtn');
+  const toast = document.getElementById('draftToast');
+
+  // Draft save (auto)
+  document.querySelectorAll('.countedQty').forEach(input => {
+    input.addEventListener('input', () => {
+      const row = input.closest('tr');
+      const product = JSON.parse(row.dataset.product);
+      const counted = parseInt(input.value) || 0;
+
+      fetch('/api/stocktake/draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: [{ id: product.id, qty: counted }] })
+      })
+      .then(() => showToast())
+      .catch(err => console.error("Draft save failed", err));
+    });
+  });
+
+  // Final Save
+  saveBtn.addEventListener('click', () => {
+    const updates = [];
+    document.querySelectorAll('#stockTable tbody tr').forEach(row => {
+      const product = JSON.parse(row.dataset.product);
+      const counted = parseInt(row.querySelector('.countedQty').value) || 0;
+      updates.push({ id: product.id, qty: counted });
+    });
+
+    fetch('/api/stocktake/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates })
+    })
+    .then(res => res.json())
+    .then(res => {
+      if(res.success) cuteAlert("✅ Stocktake applied successfully!");
+      else cuteAlert("❌ Error saving stocktake.");
+      setTimeout(()=>location.reload(), 1200);
+    });
+  });
+
+  // Barcode Search
+  barcodeInput.addEventListener('input', () => {
+    const barcode = barcodeInput.value.trim();
+    document.querySelectorAll('#stockTable tbody tr').forEach(row => {
+      row.style.display = row.dataset.barcode.includes(barcode) ? '' : 'none';
+    });
+  });
+
+  // Reset
+  resetBtn.addEventListener('click', () => {
+    barcodeInput.value = '';
+    document.querySelectorAll('#stockTable tbody tr').forEach(row => {
+      row.style.display = '';
+      const product = JSON.parse(row.dataset.product);
+      row.querySelector('.countedQty').value = product.qty;
+    });
+  });
+
+  // Cute Alert
+  function cuteAlert(message) {
+    const popup = document.createElement('div');
+    popup.className = 'popup-alert';
+    popup.innerText = message;
+    document.body.appendChild(popup);
+    setTimeout(()=> popup.classList.add('show'), 10);
+    setTimeout(()=> popup.classList.remove('show'), 2000);
+    setTimeout(()=> popup.remove(), 2500);
+  }
+
+  // Toast (Draft saved)
+  function showToast() {
+    toast.classList.add('show');
+    setTimeout(()=> toast.classList.remove('show'), 1500);
+  }
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="km">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>បញ្ជីបុគ្គលិក • Staff</title>
+
+  <!-- Fonts & Styles -->
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Khmer:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/staff.css') }}">
+</head>
+<body>
+
+  <!-- Topbar -->
+  <header class="topbar" role="banner">
+    <a class="back-link" href="{{ url_for('index') }}" aria-label="Back to Dashboard">← Dashboard</a>
+    <h1>បញ្ជីបុគ្គលិក (Staff)</h1>
+  </header>
+
+  <!-- Main -->
+  <main class="container" role="main">
+    <!-- Quick filter -->
+    <div class="toolbar">
+      <label for="staffFilter" class="sr-only">ស្វែងរកបុគ្គលិក</label>
+      <input id="staffFilter" type="text" placeholder="ស្វែងរកបុគ្គលិក..." autocomplete="off">
+    </div>
+
+    <!-- Grid -->
+    <section class="staff-grid" aria-label="Staff list">
+      {% for s in staff %}
+      <article class="staff-card" data-name="{{ s.name|lower }}">
+        <div class="avatar" aria-hidden="true">{{ s.name[:1] }}</div>
+        <div class="info">
+          <h2 class="name">{{ s.name }}</h2>
+          <p class="role">ភារកិច្ច៖ —</p>
+          <!-- Optional contact fields if you add them later:
+          <p class="contact">📞 0x-xxx-xxxx | ✉️ name@example.com</p>
+          -->
+        </div>
+      </article>
+      {% endfor %}
+    </section>
+
+    {% if staff|length == 0 %}
+      <p class="muted">មិនមានបុគ្គលិកនៅឡើយទេ។</p>
+    {% endif %}
+  </main>
+
+  <!-- Footer -->
+  <footer class="credit" role="contentinfo">
+    Made with ❤ by <span class="credit-name">Reach</span>
+  </footer>
+
+  <!-- Tiny helper script for filtering (no inline styles) -->
+  <script>
+    (function(){
+      const input = document.getElementById('staffFilter');
+      const cards = Array.from(document.querySelectorAll('.staff-card'));
+      if (!input || !cards.length) return;
+
+      input.addEventListener('input', () => {
+        const q = input.value.trim().toLowerCase();
+        cards.forEach(c => {
+          const name = c.dataset.name || '';
+          c.style.display = name.includes(q) ? '' : 'none';
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
