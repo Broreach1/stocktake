@@ -1,15 +1,13 @@
 import os
 import sqlite3
-import pandas as pd
 import requests
 from functools import wraps
-from datetime import timedelta, datetime
+from datetime import timedelta
 from flask import (
-    Flask, render_template, request, redirect, url_for,
-    session, g, flash, jsonify, send_file
+    Flask, request, redirect, url_for,
+    session, g, flash, jsonify, render_template_string
 )
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
 from flask_wtf.csrf import CSRFProtect
 
 # ==========================
@@ -23,26 +21,15 @@ csrf = CSRFProtect(app)
 # DATABASE (Render + Local safe)
 # ==========================
 DATABASE = os.environ.get("DATABASE_PATH")
-
-# If Render disk not mounted → fallback to local file
 if not DATABASE:
     DATABASE = os.path.join(os.getcwd(), "pos.db")
 
-# Try to create directory ONLY if allowed
 db_dir = os.path.dirname(DATABASE)
 if db_dir and not os.path.exists(db_dir):
     try:
         os.makedirs(db_dir, exist_ok=True)
     except PermissionError:
-        pass  # Render handles /var/data automatically
-
-# ==========================
-# Upload config
-# ==========================
-UPLOAD_FOLDER = os.path.join("static", "uploads")
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-ALLOWED_EXTENSIONS = {"xlsx"}
+        pass
 
 # ==========================
 # Session config
@@ -55,22 +42,16 @@ app.config["SESSION_COOKIE_SECURE"] = False
 # ==========================
 # Telegram config
 # ==========================
-TELEGRAM_BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN",
-    "7951793613:AAFkOBGmBURAVVusTmMCW2SCkGRsCWMY1Ug"
-)
-TELEGRAM_CHAT_ID = os.environ.get(
-    "TELEGRAM_CHAT_ID",
-    "-1003244053484"
-)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # ==========================
-# Database helpers
+# DB helpers
 # ==========================
 def get_db():
-    db = getattr(g, "_database", None)
+    db = getattr(g, "_db", None)
     if db is None:
-        db = g._database = sqlite3.connect(
+        db = g._db = sqlite3.connect(
             DATABASE,
             timeout=30,
             check_same_thread=False
@@ -81,49 +62,46 @@ def get_db():
 
 @app.teardown_appcontext
 def close_db(exception):
-    db = getattr(g, "_database", None)
+    db = getattr(g, "_db", None)
     if db:
         db.close()
 
 
-def query_db(query, args=(), one=False):
-    cur = get_db().execute(query, args)
+def query_db(sql, args=(), one=False):
+    cur = get_db().execute(sql, args)
     rows = cur.fetchall()
     cur.close()
-    return (rows[0] if rows else None) if one else rows
+    return rows[0] if one and rows else rows
 
 
-def execute_db(query, args=()):
+def execute_db(sql, args=()):
     db = get_db()
-    cur = db.execute(query, args)
+    cur = db.execute(sql, args)
     db.commit()
     cur.close()
 
 
-def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
-
-
 # ==========================
-# Telegram sender
+# Telegram sender (safe)
 # ==========================
 def send_telegram(text):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            data={
+            json={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": text,
-                "parse_mode": "Markdown",
             },
-            timeout=8,
+            timeout=10,
         )
     except Exception as e:
         print("Telegram error:", e)
 
 
 # ==========================
-# Initialize database (FLASK 3 SAFE)
+# DB init (Flask 3 SAFE)
 # ==========================
 def init_db():
     db = get_db()
@@ -140,25 +118,18 @@ def init_db():
     db.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            sku TEXT,
             name TEXT NOT NULL,
-            price REAL,
-            cost REAL,
-            qty INTEGER,
-            min_qty INTEGER,
-            barcode TEXT
+            qty INTEGER DEFAULT 0
         )
     """)
 
     db.execute("""
         CREATE TABLE IF NOT EXISTS stock_movements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
             product_id INTEGER,
             change_qty INTEGER,
             reason TEXT,
-            created_at TEXT DEFAULT (datetime('now','localtime'))
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -170,13 +141,13 @@ def init_db():
     db.commit()
 
 
-# 🔥 IMPORTANT: INIT DB AT STARTUP (NO before_first_request)
+# ✅ INIT DATABASE AT STARTUP (NO decorators)
 with app.app_context():
     init_db()
 
 
 # ==========================
-# Auth helpers
+# Auth helper
 # ==========================
 def login_required(f):
     @wraps(f)
@@ -188,13 +159,13 @@ def login_required(f):
 
 
 # ==========================
-# Auth routes
+# Routes
 # ==========================
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "").strip()
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
 
         user = query_db(
             "SELECT * FROM users WHERE username=?",
@@ -204,14 +175,21 @@ def login():
 
         if user and check_password_hash(user["password"], password):
             session["user_id"] = user["id"]
-            session["username"] = user["username"]
             session["role"] = user["role"]
             session.permanent = True
-            return redirect(url_for("stock_page"))
+            return redirect(url_for("index"))
 
-        flash("❌ Invalid username or password")
+        flash("Invalid login")
 
-    return render_template("login.html")
+    # SAFE inline template (NO TemplateNotFound)
+    return render_template_string("""
+        <h2>Login</h2>
+        <form method="post">
+            <input name="username" placeholder="username"><br>
+            <input name="password" type="password" placeholder="password"><br>
+            <button type="submit">Login</button>
+        </form>
+    """)
 
 
 @app.route("/logout")
@@ -221,49 +199,34 @@ def logout():
     return redirect(url_for("login"))
 
 
-# ==========================
-# Pages
-# ==========================
 @app.route("/")
 @login_required
-def stock_page():
+def index():
     products = query_db("SELECT * FROM products")
-    return render_template("stock.html", products=products)
+    return render_template_string("""
+        <h2>Stock</h2>
+        <ul>
+        {% for p in products %}
+            <li>{{p.name}} - {{p.qty}}</li>
+        {% endfor %}
+        </ul>
+    """, products=products)
 
 
 # ==========================
-# API: Add product
-# ==========================
-@app.route("/api/product/add", methods=["POST"])
-@csrf.exempt
-@login_required
-def add_product():
-    data = request.json or {}
-
-    execute_db("""
-        INSERT INTO products (user_id, name, qty, barcode)
-        VALUES (?, ?, ?, ?)
-    """, (
-        session["user_id"],
-        data.get("name"),
-        int(data.get("qty") or 0),
-        data.get("barcode", "")
-    ))
-
-    return jsonify(success=True)
-
-
-# ==========================
-# API: Remove stock
+# API: remove stock (safe)
 # ==========================
 @app.route("/api/stock/remove", methods=["POST"])
 @csrf.exempt
 @login_required
 def remove_stock():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
+
     product_id = data.get("product_id")
-    remove_qty = int(data.get("amount") or 0)
-    staff = data.get("staff_name", "")
+    amount = int(data.get("amount") or 0)
+
+    if not product_id or amount <= 0:
+        return jsonify(error="Invalid data"), 400
 
     product = query_db(
         "SELECT * FROM products WHERE id=?",
@@ -274,11 +237,10 @@ def remove_stock():
     if not product:
         return jsonify(error="Product not found"), 404
 
-    current_qty = int(product["qty"] or 0)
-    if remove_qty > current_qty:
+    if product["qty"] < amount:
         return jsonify(error="Not enough stock"), 400
 
-    new_qty = current_qty - remove_qty
+    new_qty = product["qty"] - amount
 
     execute_db(
         "UPDATE products SET qty=? WHERE id=?",
@@ -286,28 +248,43 @@ def remove_stock():
     )
 
     execute_db("""
-        INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
-        VALUES (?, ?, ?, ?)
-    """, (
-        session["user_id"],
-        product_id,
-        -remove_qty,
-        f"by {staff}"
-    ))
+        INSERT INTO stock_movements (product_id, change_qty, reason)
+        VALUES (?, ?, ?)
+    """, (product_id, -amount, "remove"))
 
     send_telegram(
-        f"📦 *បានដកស្តុកចេញ*\n"
-        f"🔹 *{product['name']}*\n"
-        f"➖ ដកចេញ៖ {remove_qty}\n"
-        f"📉 មុន៖ {current_qty} ➜ បន្ទាប់៖ {new_qty}\n"
-        f"👤 អ្នកដក៖ {staff}"
+        f"📦 Stock removed\n{product['name']}: -{amount} → {new_qty}"
     )
 
     return jsonify(success=True, new_qty=new_qty)
 
 
 # ==========================
-# Run locally only
+# DEBUG ROUTE (VERY IMPORTANT)
+# ==========================
+@app.route("/_health")
+def health():
+    return {
+        "status": "ok",
+        "db": DATABASE,
+        "files": os.listdir(".")
+    }
+
+
+# ==========================
+# GLOBAL ERROR HANDLER (NO BLIND 500)
+# ==========================
+@app.errorhandler(Exception)
+def handle_exception(e):
+    print("ERROR:", repr(e))
+    return jsonify(
+        error="Internal Server Error",
+        detail=str(e)
+    ), 500
+
+
+# ==========================
+# Local run only
 # ==========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5009, debug=True)
