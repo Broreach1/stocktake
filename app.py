@@ -3,7 +3,7 @@ import sqlite3
 import pandas as pd
 import requests
 from functools import wraps
-from datetime import timedelta, datetime
+from datetime import timedelta
 from flask import (
     Flask, render_template, request, redirect, url_for,
     session, g, flash, jsonify, send_file
@@ -17,22 +17,25 @@ from flask_wtf.csrf import CSRFProtect
 # --------------------------
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "super_secret_key")
+
+# CSRF protect (keep ON for forms, exempt JSON APIs below)
 csrf = CSRFProtect(app)
 
-# ✅ FIX (Render): use persistent disk path if provided
-# Example Render env: DATABASE_PATH=/var/data/pos.db
-DATABASE = os.environ.get("DATABASE_PATH", "pos.db")
+# --------------------------
+# Render persistent disk (IMPORTANT)
+# --------------------------
+# On Render, set Disk mount path like: /var/data
+# If DISK_PATH is not set, fallback to local.
+DISK_PATH = os.environ.get("DISK_PATH", "").strip()
+if DISK_PATH:
+    os.makedirs(DISK_PATH, exist_ok=True)
+    DATABASE = os.path.join(DISK_PATH, "pos.db")
+else:
+    DATABASE = "pos.db"
 
-# ✅ FIX: create db folder only if there is a folder in path
-_db_dir = os.path.dirname(DATABASE)
-if _db_dir:
-    try:
-        os.makedirs(_db_dir, exist_ok=True)
-    except PermissionError:
-        # If disk path isn't mounted yet, don't crash at import.
-        pass
-
-UPLOAD_FOLDER = os.path.join("static", "uploads")
+# Upload folder (on disk if available)
+UPLOAD_BASE = DISK_PATH if DISK_PATH else "."
+UPLOAD_FOLDER = os.path.join(UPLOAD_BASE, "static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {"xlsx"}
@@ -40,8 +43,9 @@ ALLOWED_EXTENSIONS = {"xlsx"}
 # --- Remember me (30 days) ---
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"     # consider "Strict" for intranet
-app.config["SESSION_COOKIE_SECURE"] = False       # set True when served via HTTPS
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# Render is HTTPS, so set secure True in production
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("COOKIE_SECURE", "1") == "1"
 
 # Telegram Config
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "your_bot_token_here")
@@ -54,13 +58,15 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id_here")
 def get_db():
     db = getattr(g, "_database", None)
     if db is None:
-        # ✅ FIX (Gunicorn): check_same_thread=False + higher timeout
         db = g._database = sqlite3.connect(
             DATABASE,
             timeout=30,
             check_same_thread=False
         )
         db.row_factory = sqlite3.Row
+        # reduce "database is locked"
+        db.execute("PRAGMA journal_mode=WAL;")
+        db.execute("PRAGMA busy_timeout=30000;")
     return db
 
 
@@ -90,7 +96,6 @@ def allowed_file(filename):
 
 
 def send_telegram(text):
-    """Send alert message to Telegram group/chat."""
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -111,7 +116,6 @@ def send_telegram(text):
 def init_db():
     db = get_db()
 
-    # Users
     db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,7 +125,6 @@ def init_db():
         )
     """)
 
-    # Products
     db.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,7 +139,6 @@ def init_db():
         )
     """)
 
-    # Stocktake drafts (staging area before apply)
     db.execute("""
         CREATE TABLE IF NOT EXISTS stocktake_drafts (
             user_id INTEGER,
@@ -146,19 +148,17 @@ def init_db():
         )
     """)
 
-    # Stock movements (audit log)
     db.execute("""
         CREATE TABLE IF NOT EXISTS stock_movements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             product_id INTEGER,
-            change_qty INTEGER,          -- negative for remove, positive for add/adjust
+            change_qty INTEGER,
             reason TEXT,
             created_at TEXT DEFAULT (datetime('now','localtime'))
         )
     """)
 
-    # Default admin
     db.execute("""
         INSERT OR IGNORE INTO users (username, password, role)
         VALUES (?, ?, ?)
@@ -168,7 +168,6 @@ def init_db():
         "admin"
     ))
 
-    # Helpful indexes (idempotent)
     db.execute("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_products_user ON products(user_id)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_movements_created ON stock_movements(created_at)")
@@ -177,9 +176,16 @@ def init_db():
     db.commit()
 
 
-# ✅ FIX (Render/Gunicorn): make sure tables exist when app loads (Gunicorn doesn't run __main__)
-with app.app_context():
+# --------------------------
+# Ensure DB exists on every start (Gunicorn compatible)
+# (Flask 3 removed before_first_request)
+# --------------------------
+@app.before_request
+def ensure_db_ready():
+    if getattr(g, "_db_ready", False):
+        return
     init_db()
+    g._db_ready = True
 
 
 # --------------------------
@@ -189,6 +195,9 @@ def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         if "user_id" not in session:
+            # ✅ For API calls return JSON (avoid HTML redirect causing "Network error")
+            if request.path.startswith("/api/"):
+                return jsonify(success=False, error="Unauthorized. Please login again."), 401
             flash("⚠️ Please log in first")
             return redirect(url_for("login"))
         return f(*args, **kwargs)
@@ -196,11 +205,18 @@ def login_required(f):
 
 
 # --------------------------
+# Global JSON error for APIs
+# --------------------------
+@app.errorhandler(Exception)
+def handle_any_exception(e):
+    if request.path.startswith("/api/"):
+        return jsonify(success=False, error=str(e)), 500
+    raise e
+
+
+# --------------------------
 # Auth routes
 # --------------------------
-
-# ✅ FIX: if your HTML doesn't include csrf_token, CSRF will 400
-@csrf.exempt
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
@@ -228,8 +244,6 @@ def register():
     return render_template("register.html")
 
 
-# ✅ FIX: CSRF 400 on login form (same reason)
-@csrf.exempt
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -287,7 +301,6 @@ def products_page():
         )
 
     products = [dict(p) for p in products]
-
     for p in products:
         p["qty"] = p["qty"] or 0
         p["min_qty"] = p["min_qty"] or 0
@@ -325,7 +338,6 @@ def import_products():
                 for idx, row in df.iterrows():
                     sku = str(row.get("sku") or "").strip()
                     name = str(row.get("name") or "").strip()
-
                     if not name:
                         name = f"NUII-{sku}" if sku else f"NUII-{idx+1}"
 
@@ -397,9 +409,6 @@ def checkout_page():
     return render_template("checkout.html", products=[dict(p) for p in products])
 
 
-# --------------------------
-# Remove Stock page (UI)
-# --------------------------
 @app.route("/stock/remove")
 @login_required
 def stock_remove_page():
@@ -424,9 +433,6 @@ def stock_remove_page():
     return render_template("stock_remove.html", products=products)
 
 
-# --------------------------
-# Stock movement history (admin audit)
-# --------------------------
 @app.route("/stock/history")
 @login_required
 def stock_history():
@@ -452,9 +458,6 @@ def stock_history():
     return render_template("stock_history.html", rows=rows)
 
 
-# --------------------------
-# Admin Pages
-# --------------------------
 @app.route("/admin")
 @login_required
 def admin_page():
@@ -465,7 +468,6 @@ def admin_page():
     users = query_db("SELECT id, username, role FROM users")
     products = query_db("SELECT * FROM products")
     products = [dict(p) for p in products]
-
     for p in products:
         p["price"] = p["price"] or 0.0
         p["cost"] = p["cost"] or 0.0
@@ -505,10 +507,7 @@ def export_users():
 
     users = query_db("SELECT id, username, role FROM users")
     df = pd.DataFrame(users, columns=["id", "username", "role"])
-    filepath = os.path.join(
-        app.config["UPLOAD_FOLDER"],
-        "users_export.xlsx"
-    )
+    filepath = os.path.join(app.config["UPLOAD_FOLDER"], "users_export.xlsx")
     df.to_excel(filepath, index=False)
     return send_file(filepath, as_attachment=True)
 
@@ -528,16 +527,13 @@ def export_products():
             "cost", "qty", "min_qty", "barcode"
         ]
     )
-    filepath = os.path.join(
-        app.config["UPLOAD_FOLDER"],
-        "products_export.xlsx"
-    )
+    filepath = os.path.join(app.config["UPLOAD_FOLDER"], "products_export.xlsx")
     df.to_excel(filepath, index=False)
     return send_file(filepath, as_attachment=True)
 
 
 # --------------------------
-# API: Get product by ID (for dropdown)
+# API: Get product by ID
 # --------------------------
 @app.route("/api/product/<int:pid>")
 @login_required
@@ -570,7 +566,7 @@ def api_get_product(pid):
 
 
 # --------------------------
-# API: Get product by BARCODE (supports partial match)
+# API: Get product by BARCODE (partial match)
 # --------------------------
 @app.route("/api/product/barcode/<barcode>")
 @login_required
@@ -698,15 +694,263 @@ def api_delete_product(id):
     if session["role"] == "admin":
         execute_db("DELETE FROM products WHERE id=?", (id,))
     else:
-        execute_db(
-            "DELETE FROM products WHERE id=? AND user_id=?",
-            (id, session["user_id"])
-        )
+        execute_db("DELETE FROM products WHERE id=? AND user_id=?", (id, session["user_id"]))
     return jsonify(success=True)
 
 
 # --------------------------
-# Staff page (simple static list for now)
+# API: stocktake draft save/load
+# --------------------------
+@app.route("/api/stocktake/draft", methods=["GET", "POST"])
+@csrf.exempt
+@login_required
+def api_stocktake_draft():
+    if request.method == "POST":
+        data = request.json or {}
+        for upd in data.get("updates", []):
+            execute_db("""
+                INSERT INTO stocktake_drafts (user_id, product_id, qty)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, product_id)
+                DO UPDATE SET qty=excluded.qty
+            """, (
+                session["user_id"],
+                upd["id"],
+                int(upd.get("qty") or 0)
+            ))
+        return jsonify(success=True)
+
+    drafts = query_db(
+        "SELECT product_id, qty FROM stocktake_drafts WHERE user_id=?",
+        (session["user_id"],)
+    )
+    return jsonify(success=True, drafts=[dict(d) for d in drafts])
+
+
+# --------------------------
+# API: stocktake apply final
+# --------------------------
+@app.route("/api/stocktake/apply", methods=["POST"])
+@csrf.exempt
+@login_required
+def api_stocktake_apply():
+    data = request.json or {}
+    changes = []
+
+    for upd in data.get("updates", []):
+        product = query_db(
+            "SELECT name, barcode, qty FROM products WHERE id=?",
+            (upd["id"],),
+            one=True
+        )
+        if not product:
+            continue
+
+        old_qty = int(product["qty"] or 0)
+        new_qty = int(upd.get("qty") or 0)
+
+        if old_qty != new_qty:
+            execute_db(
+                "UPDATE products SET qty=? WHERE id=? AND user_id=?",
+                (new_qty, upd["id"], session["user_id"])
+            )
+
+            execute_db(
+                "DELETE FROM stocktake_drafts WHERE user_id=? AND product_id=?",
+                (session["user_id"], upd["id"])
+            )
+
+            diff = new_qty - old_qty
+            execute_db("""
+                INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
+                VALUES (?, ?, ?, ?)
+            """, (
+                session["user_id"],
+                upd["id"],
+                diff,
+                "stocktake adjust"
+            ))
+
+            changes.append(f"- {product['name']} (📌 {product['barcode']})  {old_qty} ➝ {new_qty}")
+
+    if changes:
+        send_telegram("✏️ *បន្ថែមស្តុក*\n\n" + "\n".join(changes))
+
+    return jsonify(success=True)
+
+
+# --------------------------
+# API: remove stock (single)
+# --------------------------
+@app.route("/api/stock/remove", methods=["POST"])
+@csrf.exempt
+@login_required
+def api_stock_remove():
+    data = request.json or {}
+
+    product_id = data.get("product_id")
+    remove_qty = int(data.get("amount") or 0)
+    base_reason = (data.get("reason") or "").strip()
+    staff_name = (data.get("staff_name") or "").strip()
+
+    if not staff_name:
+        return jsonify(success=False, error="Staff name required"), 400
+    if not product_id or remove_qty <= 0:
+        return jsonify(success=False, error="Invalid product or amount"), 400
+
+    if session.get("role") == "admin":
+        product = query_db(
+            "SELECT id, name, qty, barcode, user_id FROM products WHERE id=?",
+            (product_id,),
+            one=True
+        )
+        target_user_id = product["user_id"] if product else None
+    else:
+        product = query_db(
+            "SELECT id, name, qty, barcode FROM products WHERE id=? AND user_id=?",
+            (product_id, session["user_id"]),
+            one=True
+        )
+        target_user_id = session["user_id"] if product else None
+
+    if not product:
+        return jsonify(success=False, error="Product not found"), 404
+
+    current_qty = int(product["qty"] or 0)
+    new_qty = current_qty - remove_qty
+    if new_qty < 0:
+        return jsonify(success=False, error=f"Not enough stock. Current {current_qty}, remove {remove_qty}"), 400
+
+    reason_full = f"{base_reason} (by {staff_name})" if base_reason else f"(by {staff_name})"
+
+    execute_db("UPDATE products SET qty=? WHERE id=?", (new_qty, product["id"]))
+
+    execute_db("""
+        INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
+        VALUES (?, ?, ?, ?)
+    """, (target_user_id, product["id"], -remove_qty, reason_full))
+
+    msg = (
+        "📦 *បានដកស្តុកចេញ*\n"
+        "━━━━━━━━━━━━━━━\n"
+        f"🔹 *{product['name']}*\n"
+        f"   📌 បាកូដ៖ {product['barcode']}\n"
+        f"   ➖ ដកចេញ៖ {remove_qty}\n"
+        f"   📉 មុនដក៖ {current_qty}  ដកហើយសល់៖ {new_qty}\n"
+        f"   👤 អ្នកដក៖ {staff_name}"
+        + (f"\n   📝 មូលហេតុ៖ {base_reason}" if base_reason else "")
+        + "\n━━━━━━━━━━━━━━━"
+    )
+    send_telegram(msg)
+
+    return jsonify(success=True, product_id=product["id"], old_qty=current_qty, new_qty=new_qty)
+
+
+# --------------------------
+# API: remove stock (BATCH, atomic)
+# --------------------------
+@app.route("/api/stock/remove/batch", methods=["POST"])
+@csrf.exempt
+@login_required
+def api_stock_remove_batch():
+    payload = request.json or {}
+    items = payload.get("items", [])
+    if not isinstance(items, list) or not items:
+        return jsonify(success=False, error="No items"), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+    results = []
+    tele_lines = []
+
+    try:
+        cur.execute("BEGIN IMMEDIATE")
+
+        for i, it in enumerate(items, start=1):
+            product_id = it.get("product_id")
+            remove_qty = int(it.get("amount") or 0)
+            base_reason = (it.get("reason") or "").strip()
+            staff_name = (it.get("staff_name") or "").strip()
+
+            if not staff_name:
+                cur.execute("ROLLBACK")
+                return jsonify(success=False, error="Staff name required", results=results), 400
+            if not product_id or remove_qty <= 0:
+                cur.execute("ROLLBACK")
+                return jsonify(success=False, error="Invalid product or amount", results=results), 400
+
+            if session.get("role") == "admin":
+                product = query_db("SELECT id, name, qty, barcode, user_id FROM products WHERE id=?",
+                                   (product_id,), one=True)
+                target_user_id = product["user_id"] if product else None
+            else:
+                product = query_db("SELECT id, name, qty, barcode FROM products WHERE id=? AND user_id=?",
+                                   (product_id, session["user_id"]), one=True)
+                target_user_id = session["user_id"] if product else None
+
+            if not product:
+                cur.execute("ROLLBACK")
+                return jsonify(success=False, error="Product not found", results=results), 404
+
+            current_qty = int(product["qty"] or 0)
+            new_qty = current_qty - remove_qty
+            if new_qty < 0:
+                cur.execute("ROLLBACK")
+                return jsonify(success=False, error=f"Not enough stock (current {current_qty}, remove {remove_qty})",
+                               results=results), 400
+
+            reason_full = f"{base_reason} (by {staff_name})" if base_reason else f"(by {staff_name})"
+
+            cur.execute("UPDATE products SET qty=? WHERE id=?", (new_qty, product["id"]))
+            cur.execute("""
+                INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
+                VALUES (?, ?, ?, ?)
+            """, (target_user_id, product["id"], -remove_qty, reason_full))
+
+            res = {
+                "index": i,
+                "product_id": product["id"],
+                "name": product["name"],
+                "barcode": product["barcode"],
+                "amount": remove_qty,
+                "old_qty": current_qty,
+                "new_qty": new_qty,
+                "staff_name": staff_name,
+                "reason": base_reason,
+            }
+            results.append(res)
+
+            tele_lines.append(
+                f"🔹 *{product['name']}*\n"
+                f"   📌 បាកូដ៖ {product['barcode']}\n"
+                f"   ➖ ដកចេញ៖ {remove_qty}\n"
+                f"   📉 មុន៖ {current_qty} ➜ បន្ទាប់៖ {new_qty}\n"
+                f"   👤 អ្នកដក៖ {staff_name}"
+                + (f"\n   📝 មូលហេតុ៖ {base_reason}" if base_reason else "")
+            )
+
+        conn.commit()
+
+        if tele_lines:
+            send_telegram(
+                "📦 *របាយការណ៍ដកស្តុកចេញ (Batch)*\n"
+                "━━━━━━━━━━━━━━━\n"
+                + "\n\n".join(tele_lines)
+                + "\n━━━━━━━━━━━━━━━"
+            )
+
+        return jsonify(success=True, results=results)
+
+    except Exception as e:
+        try:
+            cur.execute("ROLLBACK")
+        except Exception:
+            pass
+        return jsonify(success=False, error=str(e), results=results), 500
+
+
+# --------------------------
+# Staff page
 # --------------------------
 @app.route("/staff")
 @login_required
@@ -728,9 +972,9 @@ def staff_page():
 
 
 # --------------------------
-# Run app
+# Run app (local only)
 # --------------------------
 if __name__ == "__main__":
-    # local only; Render runs Gunicorn
-    init_db()
+    with app.app_context():
+        init_db()
     app.run(host="0.0.0.0", port=5009, debug=True)
