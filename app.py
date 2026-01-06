@@ -1,51 +1,49 @@
 import os
 import sqlite3
+import pandas as pd
 import requests
 from functools import wraps
-from datetime import timedelta
+from datetime import timedelta, datetime
 from flask import (
-    Flask, request, redirect, url_for,
-    session, g, flash, jsonify, render_template_string
+    Flask, render_template, request, redirect, url_for,
+    session, g, flash, jsonify, send_file
 )
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_wtf.csrf import CSRFProtect, CSRFError
+from werkzeug.utils import secure_filename
+from flask_wtf.csrf import CSRFProtect
 
-# ==========================
+# --------------------------
 # Flask setup
-# ==========================
+# --------------------------
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "super_secret_key")
 csrf = CSRFProtect(app)
 
-# ==========================
-# DATABASE (Render + Local safe)
-# ==========================
-DATABASE = os.environ.get("DATABASE_PATH")
-if not DATABASE:
-    DATABASE = os.path.join(os.getcwd(), "pos.db")
+# ✅ FIX: Render-safe DB
+DATABASE = os.environ.get("DATABASE_PATH", "pos.db")
 
-db_dir = os.path.dirname(DATABASE)
-if db_dir and not os.path.exists(db_dir):
-    try:
-        os.makedirs(db_dir, exist_ok=True)
-    except PermissionError:
-        pass
+UPLOAD_FOLDER = os.path.join("static", "uploads")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+ALLOWED_EXTENSIONS = {"xlsx"}
 
-# ==========================
-# Session config
-# ==========================
+# --- Remember me (30 days) ---
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = False
 
-# ==========================
+# Telegram Config
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "your_bot_token_here")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id_here")
+
+# --------------------------
 # DB helpers
-# ==========================
+# --------------------------
 def get_db():
-    db = getattr(g, "_db", None)
+    db = getattr(g, "_database", None)
     if db is None:
-        db = g._db = sqlite3.connect(
+        db = g._database = sqlite3.connect(
             DATABASE,
             timeout=30,
             check_same_thread=False
@@ -55,29 +53,47 @@ def get_db():
 
 
 @app.teardown_appcontext
-def close_db(exception):
-    db = getattr(g, "_db", None)
+def close_connection(exception):
+    db = getattr(g, "_database", None)
     if db:
         db.close()
 
 
-def query_db(sql, args=(), one=False):
-    cur = get_db().execute(sql, args)
+def query_db(query, args=(), one=False):
+    cur = get_db().execute(query, args)
     rows = cur.fetchall()
     cur.close()
-    return rows[0] if one and rows else rows
+    return (rows[0] if rows else None) if one else rows
 
 
-def execute_db(sql, args=()):
+def execute_db(query, args=()):
     db = get_db()
-    cur = db.execute(sql, args)
+    cur = db.execute(query, args)
     db.commit()
     cur.close()
 
 
-# ==========================
-# DB init (Flask 3 SAFE)
-# ==========================
+def allowed_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def send_telegram(text):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "Markdown",
+            },
+            timeout=8,
+        )
+    except Exception as e:
+        print("Telegram error:", e)
+
+# --------------------------
+# Initialize DB (FIXED)
+# --------------------------
 def init_db():
     db = get_db()
 
@@ -91,6 +107,40 @@ def init_db():
     """)
 
     db.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            sku TEXT,
+            name TEXT NOT NULL,
+            price REAL,
+            cost REAL,
+            qty INTEGER,
+            min_qty INTEGER,
+            barcode TEXT
+        )
+    """)
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS stocktake_drafts (
+            user_id INTEGER,
+            product_id INTEGER,
+            qty INTEGER,
+            PRIMARY KEY (user_id, product_id)
+        )
+    """)
+
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS stock_movements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            product_id INTEGER,
+            change_qty INTEGER,
+            reason TEXT,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    """)
+
+    db.execute("""
         INSERT OR IGNORE INTO users (username, password, role)
         VALUES (?, ?, ?)
     """, ("admin", generate_password_hash("admin123"), "admin"))
@@ -98,31 +148,57 @@ def init_db():
     db.commit()
 
 
+# ✅ FIX: init DB at startup (Flask 3 safe)
 with app.app_context():
     init_db()
 
-
-# ==========================
-# Auth helper
-# ==========================
+# --------------------------
+# Auth helpers
+# --------------------------
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         if "user_id" not in session:
+            flash("⚠️ Please log in first")
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return wrapper
 
+# --------------------------
+# Auth routes
+# --------------------------
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
 
-# ==========================
-# LOGIN (CSRF EXEMPT ✅)
-# ==========================
+        if not username or not password:
+            flash("⚠️ Username and password required")
+            return redirect(url_for("register"))
+
+        try:
+            execute_db(
+                "INSERT INTO users (username, password, role) VALUES (?,?,?)",
+                (username, generate_password_hash(password), "user"),
+            )
+        except sqlite3.IntegrityError:
+            flash("⚠️ Username already exists")
+            return redirect(url_for("register"))
+
+        flash("✅ Registration successful! Please log in.")
+        return redirect(url_for("login"))
+
+    return render_template("register.html")
+
+
+# ✅ FIX: CSRF exempt login
 @app.route("/login", methods=["GET", "POST"])
 @csrf.exempt
 def login():
     if request.method == "POST":
-        username = request.form.get("username", "")
-        password = request.form.get("password", "")
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
 
         user = query_db(
             "SELECT * FROM users WHERE username=?",
@@ -132,60 +208,45 @@ def login():
 
         if user and check_password_hash(user["password"], password):
             session["user_id"] = user["id"]
+            session["username"] = user["username"]
             session["role"] = user["role"]
             session.permanent = True
-            return redirect(url_for("index"))
+            return redirect(url_for("stock_remove_page"))
 
-        flash("Invalid login")
+        flash("❌ Invalid username or password")
 
-    return render_template_string("""
-        <h2>Login</h2>
-        <form method="post">
-            <input name="username" placeholder="username"><br>
-            <input name="password" type="password" placeholder="password"><br>
-            <button type="submit">Login</button>
-        </form>
-    """)
+    return render_template("login.html")
 
 
 @app.route("/logout")
 @login_required
 def logout():
     session.clear()
+    flash("✅ Logged out successfully")
     return redirect(url_for("login"))
 
-
+# --------------------------
+# Pages
+# --------------------------
 @app.route("/")
 @login_required
 def index():
-    return "<h2>Login OK ✅</h2>"
+    return render_template("index.html")
 
+@app.route("/stock/remove")
+@login_required
+def stock_remove_page():
+    products = query_db(
+        "SELECT id, name, barcode, qty FROM products WHERE user_id=? OR ?='admin'",
+        (session["user_id"], session["role"])
+    )
+    products = [dict(p) for p in products]
+    for p in products:
+        p["qty"] = p["qty"] or 0
+    return render_template("stock_remove.html", products=products)
 
-# ==========================
-# CSRF ERROR HANDLER (NO 500)
-# ==========================
-@app.errorhandler(CSRFError)
-def handle_csrf_error(e):
-    return jsonify(
-        error="CSRF validation failed",
-        detail=str(e)
-    ), 400
-
-
-# ==========================
-# GLOBAL ERROR HANDLER
-# ==========================
-@app.errorhandler(Exception)
-def handle_exception(e):
-    print("ERROR:", repr(e))
-    return jsonify(
-        error="Internal Server Error",
-        detail=str(e)
-    ), 500
-
-
-# ==========================
-# Local run
-# ==========================
+# --------------------------
+# Run app (local only)
+# --------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5009, debug=True)
