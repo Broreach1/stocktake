@@ -8,7 +8,7 @@ from flask import (
     session, g, flash, jsonify, render_template_string
 )
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_wtf.csrf import CSRFProtect
+from flask_wtf.csrf import CSRFProtect, CSRFError
 
 # ==========================
 # Flask setup
@@ -38,12 +38,6 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = False
-
-# ==========================
-# Telegram config
-# ==========================
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # ==========================
 # DB helpers
@@ -82,25 +76,6 @@ def execute_db(sql, args=()):
 
 
 # ==========================
-# Telegram sender (safe)
-# ==========================
-def send_telegram(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-            },
-            timeout=10,
-        )
-    except Exception as e:
-        print("Telegram error:", e)
-
-
-# ==========================
 # DB init (Flask 3 SAFE)
 # ==========================
 def init_db():
@@ -116,24 +91,6 @@ def init_db():
     """)
 
     db.execute("""
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            qty INTEGER DEFAULT 0
-        )
-    """)
-
-    db.execute("""
-        CREATE TABLE IF NOT EXISTS stock_movements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER,
-            change_qty INTEGER,
-            reason TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    db.execute("""
         INSERT OR IGNORE INTO users (username, password, role)
         VALUES (?, ?, ?)
     """, ("admin", generate_password_hash("admin123"), "admin"))
@@ -141,7 +98,6 @@ def init_db():
     db.commit()
 
 
-# ✅ INIT DATABASE AT STARTUP (NO decorators)
 with app.app_context():
     init_db()
 
@@ -159,9 +115,10 @@ def login_required(f):
 
 
 # ==========================
-# Routes
+# LOGIN (CSRF EXEMPT ✅)
 # ==========================
 @app.route("/login", methods=["GET", "POST"])
+@csrf.exempt
 def login():
     if request.method == "POST":
         username = request.form.get("username", "")
@@ -181,7 +138,6 @@ def login():
 
         flash("Invalid login")
 
-    # SAFE inline template (NO TemplateNotFound)
     return render_template_string("""
         <h2>Login</h2>
         <form method="post">
@@ -202,77 +158,22 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    products = query_db("SELECT * FROM products")
-    return render_template_string("""
-        <h2>Stock</h2>
-        <ul>
-        {% for p in products %}
-            <li>{{p.name}} - {{p.qty}}</li>
-        {% endfor %}
-        </ul>
-    """, products=products)
+    return "<h2>Login OK ✅</h2>"
 
 
 # ==========================
-# API: remove stock (safe)
+# CSRF ERROR HANDLER (NO 500)
 # ==========================
-@app.route("/api/stock/remove", methods=["POST"])
-@csrf.exempt
-@login_required
-def remove_stock():
-    data = request.get_json(silent=True) or {}
-
-    product_id = data.get("product_id")
-    amount = int(data.get("amount") or 0)
-
-    if not product_id or amount <= 0:
-        return jsonify(error="Invalid data"), 400
-
-    product = query_db(
-        "SELECT * FROM products WHERE id=?",
-        (product_id,),
-        one=True
-    )
-
-    if not product:
-        return jsonify(error="Product not found"), 404
-
-    if product["qty"] < amount:
-        return jsonify(error="Not enough stock"), 400
-
-    new_qty = product["qty"] - amount
-
-    execute_db(
-        "UPDATE products SET qty=? WHERE id=?",
-        (new_qty, product_id)
-    )
-
-    execute_db("""
-        INSERT INTO stock_movements (product_id, change_qty, reason)
-        VALUES (?, ?, ?)
-    """, (product_id, -amount, "remove"))
-
-    send_telegram(
-        f"📦 Stock removed\n{product['name']}: -{amount} → {new_qty}"
-    )
-
-    return jsonify(success=True, new_qty=new_qty)
+@app.errorhandler(CSRFError)
+def handle_csrf_error(e):
+    return jsonify(
+        error="CSRF validation failed",
+        detail=str(e)
+    ), 400
 
 
 # ==========================
-# DEBUG ROUTE (VERY IMPORTANT)
-# ==========================
-@app.route("/_health")
-def health():
-    return {
-        "status": "ok",
-        "db": DATABASE,
-        "files": os.listdir(".")
-    }
-
-
-# ==========================
-# GLOBAL ERROR HANDLER (NO BLIND 500)
+# GLOBAL ERROR HANDLER
 # ==========================
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -284,7 +185,7 @@ def handle_exception(e):
 
 
 # ==========================
-# Local run only
+# Local run
 # ==========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5009, debug=True)
