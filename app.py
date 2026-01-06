@@ -100,7 +100,6 @@ def close_connection(exception):
 
 
 def _row_to_dict(r):
-    # SQLite Row -> dict; psycopg already dict_row
     if r is None:
         return None
     if isinstance(r, sqlite3.Row):
@@ -147,7 +146,6 @@ def allowed_file(filename):
 
 
 def send_telegram(text):
-    """Send alert message to Telegram group/chat."""
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
@@ -306,14 +304,12 @@ def ensure_db_initialized():
     global _db_initialized
     if _db_initialized:
         return
-
     try:
         print("DATABASE_URL exists?", bool(DATABASE_URL))
         init_db()
         _db_initialized = True
         print("✅ DB initialized OK")
     except Exception as e:
-        # Don't crash all requests; show error in logs
         print("❌ DB init failed:", e)
 
 
@@ -324,6 +320,9 @@ def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         if "user_id" not in session:
+            # API calls should return JSON instead of redirect
+            if request.path.startswith("/api/"):
+                return jsonify(success=False, error="Not logged in"), 401
             flash("⚠️ Please log in first")
             return redirect(url_for("login"))
         return f(*args, **kwargs)
@@ -366,11 +365,7 @@ def login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "").strip()
 
-        user = query_db(
-            "SELECT * FROM users WHERE username=?",
-            (username,),
-            one=True
-        )
+        user = query_db("SELECT * FROM users WHERE username=?", (username,), one=True)
         user = _row_to_dict(user)
 
         if user and check_password_hash(user["password"], password):
@@ -412,10 +407,7 @@ def products_page():
     if session.get("role") == "admin":
         products = query_db("SELECT * FROM products")
     else:
-        products = query_db(
-            "SELECT * FROM products WHERE user_id=?",
-            (session["user_id"],)
-        )
+        products = query_db("SELECT * FROM products WHERE user_id=?", (session["user_id"],))
 
     products = [_row_to_dict(p) for p in products]
     for p in products:
@@ -425,93 +417,82 @@ def products_page():
     return render_template("products.html", products=products)
 
 
-@app.route("/products/import", methods=["GET", "POST"])
+# --------------------------
+# ✅ FIXED: Barcode search (SAFE)
+# --------------------------
+def _find_product_by_barcode(barcode: str):
+    barcode = (barcode or "").strip()
+    if not barcode:
+        return None
+
+    like_pattern = f"%{barcode}%"
+
+    if session.get("role") == "admin":
+        p = query_db(
+            "SELECT id, name, qty, barcode, user_id FROM products WHERE barcode=? ORDER BY id DESC LIMIT 1",
+            (barcode,),
+            one=True
+        )
+        p = _row_to_dict(p)
+        if not p:
+            p = query_db(
+                "SELECT id, name, qty, barcode, user_id FROM products WHERE barcode LIKE ? ORDER BY id DESC LIMIT 1",
+                (like_pattern,),
+                one=True
+            )
+            p = _row_to_dict(p)
+        return p
+
+    # normal user
+    p = query_db(
+        "SELECT id, name, qty, barcode FROM products WHERE user_id=? AND barcode=? ORDER BY id DESC LIMIT 1",
+        (session["user_id"], barcode),
+        one=True
+    )
+    p = _row_to_dict(p)
+    if not p:
+        p = query_db(
+            "SELECT id, name, qty, barcode FROM products WHERE user_id=? AND barcode LIKE ? ORDER BY id DESC LIMIT 1",
+            (session["user_id"], like_pattern),
+            one=True
+        )
+        p = _row_to_dict(p)
+    return p
+
+
+# ✅ new safe endpoint: /api/product/barcode?q=123
+@app.route("/api/product/barcode", methods=["GET"])
+@csrf.exempt
 @login_required
-def import_products():
-    if request.method == "POST":
-        file = request.files.get("file")
-        if not file or file.filename == "":
-            flash("⚠️ No file selected")
-            return redirect(request.url)
+def api_get_product_by_barcode_q():
+    barcode = (request.args.get("q") or "").strip()
+    p = _find_product_by_barcode(barcode)
+    if not p:
+        return jsonify(success=False, error="Product not found"), 404
 
-        if file and allowed_file(file.filename):
-            filepath = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(file.filename))
-            file.save(filepath)
-
-            try:
-                df = pd.read_excel(filepath)
-
-                required_cols = ["sku", "name", "price", "cost", "qty", "min_qty", "barcode"]
-                if not all(col in df.columns for col in required_cols):
-                    flash("⚠️ Excel missing required columns")
-                    return redirect(request.url)
-
-                for idx, row in df.iterrows():
-                    sku = str(row.get("sku") or "").strip()
-                    name = str(row.get("name") or "").strip()
-
-                    if not sku:
-                        sku = f"AUTO-{idx+1}"
-                    if not name:
-                        name = f"NUII-{sku}"
-
-                    qty = int(row.get("qty") or 0)
-                    min_qty = int(row.get("min_qty") or 0)
-                    barcode = str(row.get("barcode") or "").strip()
-
-                    execute_db("""
-                        INSERT INTO products (user_id, sku, name, price, cost, qty, min_qty, barcode)
-                        VALUES (?,?,?,?,?,?,?,?)
-                        ON CONFLICT (user_id, sku)
-                        DO UPDATE SET
-                            name=EXCLUDED.name,
-                            price=EXCLUDED.price,
-                            cost=EXCLUDED.cost,
-                            qty=EXCLUDED.qty,
-                            min_qty=EXCLUDED.min_qty,
-                            barcode=EXCLUDED.barcode
-                    """, (
-                        session["user_id"], sku, name,
-                        float(row.get("price") or 0),
-                        float(row.get("cost") or 0),
-                        qty, min_qty, barcode
-                    ))
-
-                flash("✅ Products imported successfully")
-                return redirect(url_for("products_page"))
-
-            except Exception as e:
-                flash(f"❌ Error reading Excel: {e}")
-                return redirect(request.url)
-
-    return render_template("import_products.html")
+    return jsonify(success=True, product={
+        "id": p["id"],
+        "name": p["name"],
+        "barcode": p.get("barcode", ""),
+        "qty": int(p.get("qty") or 0),
+    })
 
 
-@app.route("/products/download-template")
+# ✅ keep old style working too: /api/product/barcode/<barcode>
+@app.route("/api/product/barcode/<path:barcode>", methods=["GET"])
+@csrf.exempt
 @login_required
-def download_template():
-    df = pd.DataFrame(columns=["sku", "name", "price", "cost", "qty", "min_qty", "barcode"])
-    filepath = os.path.join(app.config["UPLOAD_FOLDER"], "product_template.xlsx")
-    df.to_excel(filepath, index=False)
-    return send_file(filepath, as_attachment=True)
+def api_get_product_by_barcode_path(barcode):
+    p = _find_product_by_barcode(barcode)
+    if not p:
+        return jsonify(success=False, error="Product not found"), 404
 
-
-@app.route("/stocktake")
-@login_required
-def stocktake_page():
-    products = query_db("SELECT * FROM products WHERE user_id=?", (session["user_id"],))
-    products = [_row_to_dict(p) for p in products]
-    for p in products:
-        p["qty"] = p.get("qty") or 0
-        p["min_qty"] = p.get("min_qty") or 0
-    return render_template("stocktake.html", products=products)
-
-
-@app.route("/checkout")
-@login_required
-def checkout_page():
-    products = query_db("SELECT * FROM products WHERE user_id=?", (session["user_id"],))
-    return render_template("checkout.html", products=[_row_to_dict(p) for p in products])
+    return jsonify(success=True, product={
+        "id": p["id"],
+        "name": p["name"],
+        "barcode": p.get("barcode", ""),
+        "qty": int(p.get("qty") or 0),
+    })
 
 
 # --------------------------
