@@ -1,8 +1,11 @@
+# app.py  (Render-ready: PostgreSQL on Render, SQLite locally)
 import os
+import sqlite3
 import pandas as pd
 import requests
 from functools import wraps
 from datetime import timedelta
+from urllib.parse import urlparse
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -12,8 +15,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from flask_wtf.csrf import CSRFProtect
 
+# Postgres (Render)
 import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg2.extras
 
 
 # --------------------------
@@ -22,6 +26,10 @@ from psycopg2.extras import RealDictCursor
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "super_secret_key")
 csrf = CSRFProtect(app)
+
+# If DATABASE_URL exists -> PostgreSQL (Render). Else -> SQLite local.
+DATABASE = os.environ.get("SQLITE_PATH", "pos.db")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 UPLOAD_FOLDER = os.path.join("static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -32,35 +40,60 @@ ALLOWED_EXTENSIONS = {"xlsx"}
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"] = False  # set True when HTTPS
+app.config["SESSION_COOKIE_SECURE"] = False  # set True if HTTPS
 
 # Telegram Config
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "your_bot_token_here")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "your_chat_id_here")
 
-# Render Postgres provides DATABASE_URL
-DATABASE_URL = os.environ.get("DATABASE_URL")  # e.g. postgres://...
-
 
 # --------------------------
-# DB helpers (PostgreSQL)
+# DB helpers (SQLite + PostgreSQL)
 # --------------------------
+def is_postgres() -> bool:
+    return bool(DATABASE_URL)
+
+
+def _pg_url():
+    url = DATABASE_URL
+    # Render sometimes provides postgres://
+    if url and url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return url
+
+
+def _adapt_sql(sql: str) -> str:
+    """
+    Your code uses SQLite placeholders '?' everywhere.
+    psycopg2 uses %s. This converts ? -> %s for PostgreSQL.
+    """
+    if not is_postgres():
+        return sql
+    return sql.replace("?", "%s")
+
+
 def get_db():
-    """
-    One connection per request (stored in flask.g).
-    """
-    db = getattr(g, "_db", None)
-    if db is None:
-        if not DATABASE_URL:
-            raise RuntimeError("DATABASE_URL is not set. On Render, add a PostgreSQL and link DATABASE_URL.")
-        db = g._db = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    db = getattr(g, "_database", None)
+    if db is not None:
+        return db
+
+    if is_postgres():
+        db = g._database = psycopg2.connect(
+            _pg_url(),
+            cursor_factory=psycopg2.extras.RealDictCursor,
+        )
+        # We will commit manually in execute_db / transactions
         db.autocommit = False
+    else:
+        # SQLite
+        db = g._database = sqlite3.connect(DATABASE, timeout=10, isolation_level=None)
+        db.row_factory = sqlite3.Row  # dict-like rows
     return db
 
 
 @app.teardown_appcontext
 def close_connection(exception):
-    db = getattr(g, "_db", None)
+    db = getattr(g, "_database", None)
     if db:
         try:
             db.close()
@@ -69,29 +102,49 @@ def close_connection(exception):
 
 
 def query_db(query, args=(), one=False):
-    conn = get_db()
-    with conn.cursor() as cur:
-        cur.execute(query, args)
+    db = get_db()
+    q = _adapt_sql(query)
+
+    if is_postgres():
+        with db.cursor() as cur:
+            cur.execute(q, args)
+            rows = cur.fetchall()
+            return (rows[0] if rows else None) if one else rows
+    else:
+        cur = db.execute(q, args)
         rows = cur.fetchall()
-    return (rows[0] if rows else None) if one else rows
+        cur.close()
+        return (rows[0] if rows else None) if one else rows
 
 
 def execute_db(query, args=()):
-    conn = get_db()
-    with conn.cursor() as cur:
-        cur.execute(query, args)
-    conn.commit()
+    db = get_db()
+    q = _adapt_sql(query)
+
+    if is_postgres():
+        with db.cursor() as cur:
+            cur.execute(q, args)
+        db.commit()
+    else:
+        cur = db.execute(q, args)
+        db.commit()
+        cur.close()
 
 
 def allowed_file(filename):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in {"xlsx"}
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 def send_telegram(text):
+    """Send alert message to Telegram group/chat."""
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            data={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "Markdown",
+            },
             timeout=8,
         )
     except Exception as e:
@@ -99,75 +152,148 @@ def send_telegram(text):
 
 
 # --------------------------
-# Initialize DB (Postgres)
+# Initialize DB (works on SQLite + Postgres)
 # --------------------------
 def init_db():
     with app.app_context():
-        conn = get_db()
-        with conn.cursor() as cur:
+        db = get_db()
+
+        if is_postgres():
             # USERS
-            cur.execute("""
+            execute_db("""
                 CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    username TEXT UNIQUE NOT NULL,
-                    password TEXT NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    username TEXT UNIQUE,
+                    password TEXT,
                     role TEXT DEFAULT 'user'
                 )
             """)
 
             # PRODUCTS
-            # We enforce unique (user_id, sku) so import can UPSERT safely.
-            cur.execute("""
+            execute_db("""
                 CREATE TABLE IF NOT EXISTS products (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                    sku TEXT NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    sku TEXT,
                     name TEXT NOT NULL,
-                    price NUMERIC,
-                    cost NUMERIC,
-                    qty INTEGER DEFAULT 0,
-                    min_qty INTEGER DEFAULT 0,
-                    barcode TEXT,
-                    UNIQUE (user_id, sku)
+                    price DOUBLE PRECISION,
+                    cost DOUBLE PRECISION,
+                    qty INTEGER,
+                    min_qty INTEGER,
+                    barcode TEXT
                 )
             """)
 
+            # Optional uniqueness (helps import "replace")
+            # unique by (user_id, sku) to allow upsert import
+            execute_db("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'uq_products_user_sku'
+                    ) THEN
+                        ALTER TABLE products
+                        ADD CONSTRAINT uq_products_user_sku UNIQUE (user_id, sku);
+                    END IF;
+                END
+                $$;
+            """)
+
             # STOCKTAKE DRAFTS
-            cur.execute("""
+            execute_db("""
                 CREATE TABLE IF NOT EXISTS stocktake_drafts (
-                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-                    qty INTEGER DEFAULT 0,
+                    user_id BIGINT,
+                    product_id BIGINT,
+                    qty INTEGER,
                     PRIMARY KEY (user_id, product_id)
                 )
             """)
 
-            # STOCK MOVEMENTS
-            cur.execute("""
+            # MOVEMENTS
+            execute_db("""
                 CREATE TABLE IF NOT EXISTS stock_movements (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-                    product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
-                    change_qty INTEGER NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    product_id BIGINT,
+                    change_qty INTEGER,
                     reason TEXT,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
             # Default admin
-            cur.execute("""
+            execute_db("""
                 INSERT INTO users (username, password, role)
-                VALUES (%s, %s, %s)
+                VALUES (?, ?, ?)
                 ON CONFLICT (username) DO NOTHING
             """, ("admin", generate_password_hash("admin123"), "admin"))
 
             # Indexes
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_products_user ON products(user_id)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_movements_created ON stock_movements(created_at)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_movements_product ON stock_movements(product_id)")
+            execute_db("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
+            execute_db("CREATE INDEX IF NOT EXISTS idx_products_user ON products(user_id)")
+            execute_db("CREATE INDEX IF NOT EXISTS idx_movements_created ON stock_movements(created_at)")
+            execute_db("CREATE INDEX IF NOT EXISTS idx_movements_product ON stock_movements(product_id)")
 
-        conn.commit()
+        else:
+            # SQLite schema (your original)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE,
+                    password TEXT,
+                    role TEXT DEFAULT 'user'
+                )
+            """)
+
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    sku TEXT,
+                    name TEXT NOT NULL,
+                    price REAL,
+                    cost REAL,
+                    qty INTEGER,
+                    min_qty INTEGER,
+                    barcode TEXT
+                )
+            """)
+
+            # Helpful unique key for import replace behavior
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_products_user_sku ON products(user_id, sku)")
+
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS stocktake_drafts (
+                    user_id INTEGER,
+                    product_id INTEGER,
+                    qty INTEGER,
+                    PRIMARY KEY (user_id, product_id)
+                )
+            """)
+
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS stock_movements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    product_id INTEGER,
+                    change_qty INTEGER,
+                    reason TEXT,
+                    created_at TEXT DEFAULT (datetime('now','localtime'))
+                )
+            """)
+
+            db.execute("""
+                INSERT OR IGNORE INTO users (username, password, role)
+                VALUES (?, ?, ?)
+            """, ("admin", generate_password_hash("admin123"), "admin"))
+
+            db.execute("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_products_user ON products(user_id)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_movements_created ON stock_movements(created_at)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_movements_product ON stock_movements(product_id)")
+
+            db.commit()
 
 
 # --------------------------
@@ -200,7 +326,7 @@ def register():
 
         try:
             execute_db(
-                "INSERT INTO users (username, password, role) VALUES (%s, %s, %s)",
+                "INSERT INTO users (username, password, role) VALUES (?,?,?)",
                 (username, hashed_pw, "user"),
             )
         except Exception:
@@ -220,7 +346,7 @@ def login():
         password = request.form.get("password", "").strip()
 
         user = query_db(
-            "SELECT * FROM users WHERE username=%s",
+            "SELECT * FROM users WHERE username=?",
             (username,),
             one=True
         )
@@ -228,7 +354,7 @@ def login():
         if user and check_password_hash(user["password"], password):
             session["user_id"] = user["id"]
             session["username"] = user["username"]
-            session["role"] = user["role"]
+            session["role"] = user.get("role", "user")
 
             remember = request.form.get("remember") == "on"
             session.permanent = bool(remember)
@@ -262,17 +388,17 @@ def index():
 @login_required
 def products_page():
     if session.get("role") == "admin":
-        products = query_db("SELECT * FROM products ORDER BY id DESC")
+        products = query_db("SELECT * FROM products")
     else:
         products = query_db(
-            "SELECT * FROM products WHERE user_id=%s ORDER BY id DESC",
+            "SELECT * FROM products WHERE user_id=?",
             (session["user_id"],)
         )
 
-    # ensure ints
+    products = [dict(p) for p in products]
     for p in products:
-        p["qty"] = int(p.get("qty") or 0)
-        p["min_qty"] = int(p.get("min_qty") or 0)
+        p["qty"] = p.get("qty") or 0
+        p["min_qty"] = p.get("min_qty") or 0
 
     return render_template("products.html", products=products)
 
@@ -298,27 +424,25 @@ def import_products():
                     flash("⚠️ Excel missing required columns")
                     return redirect(request.url)
 
-                conn = get_db()
-                with conn.cursor() as cur:
-                    for idx, row in df.iterrows():
-                        sku = str(row.get("sku") or "").strip()
-                        if not sku:
-                            sku = f"AUTO-{idx+1}"  # guarantee unique-ish sku
+                for idx, row in df.iterrows():
+                    sku = str(row.get("sku") or "").strip()
+                    name = str(row.get("name") or "").strip()
 
-                        name = str(row.get("name") or "").strip()
-                        if not name:
-                            name = f"NUII-{sku}"
+                    # ensure sku exists (needed for upsert)
+                    if not sku:
+                        sku = f"AUTO-{idx+1}"
 
-                        qty = int(row.get("qty") or 0)
-                        min_qty = int(row.get("min_qty") or 0)
-                        price = row.get("price", 0) or 0
-                        cost = row.get("cost", 0) or 0
-                        barcode = str(row.get("barcode") or "").strip()
+                    if not name:
+                        name = f"NUII-{sku}"
 
-                        # UPSERT by (user_id, sku)
-                        cur.execute("""
+                    qty = int(row.get("qty") or 0)
+                    min_qty = int(row.get("min_qty") or 0)
+                    barcode = str(row.get("barcode") or "").strip()
+
+                    if is_postgres():
+                        execute_db("""
                             INSERT INTO products (user_id, sku, name, price, cost, qty, min_qty, barcode)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                            VALUES (?,?,?,?,?,?,?,?)
                             ON CONFLICT (user_id, sku)
                             DO UPDATE SET
                                 name=EXCLUDED.name,
@@ -328,18 +452,33 @@ def import_products():
                                 min_qty=EXCLUDED.min_qty,
                                 barcode=EXCLUDED.barcode
                         """, (
-                            session["user_id"], sku, name, price, cost, qty, min_qty, barcode
+                            session["user_id"], sku, name,
+                            float(row.get("price") or 0),
+                            float(row.get("cost") or 0),
+                            qty, min_qty, barcode
+                        ))
+                    else:
+                        execute_db("""
+                            INSERT INTO products (user_id, sku, name, price, cost, qty, min_qty, barcode)
+                            VALUES (?,?,?,?,?,?,?,?)
+                            ON CONFLICT(user_id, sku) DO UPDATE SET
+                                name=excluded.name,
+                                price=excluded.price,
+                                cost=excluded.cost,
+                                qty=excluded.qty,
+                                min_qty=excluded.min_qty,
+                                barcode=excluded.barcode
+                        """, (
+                            session["user_id"], sku, name,
+                            row.get("price", 0),
+                            row.get("cost", 0),
+                            qty, min_qty, barcode
                         ))
 
-                conn.commit()
                 flash("✅ Products imported successfully")
                 return redirect(url_for("products_page"))
 
             except Exception as e:
-                try:
-                    get_db().rollback()
-                except Exception:
-                    pass
                 flash(f"❌ Error reading Excel: {e}")
                 return redirect(request.url)
 
@@ -358,24 +497,19 @@ def download_template():
 @app.route("/stocktake")
 @login_required
 def stocktake_page():
-    products = query_db(
-        "SELECT * FROM products WHERE user_id=%s ORDER BY name ASC",
-        (session["user_id"],)
-    )
+    products = query_db("SELECT * FROM products WHERE user_id=?", (session["user_id"],))
+    products = [dict(p) for p in products]
     for p in products:
-        p["qty"] = int(p.get("qty") or 0)
-        p["min_qty"] = int(p.get("min_qty") or 0)
+        p["qty"] = p.get("qty") or 0
+        p["min_qty"] = p.get("min_qty") or 0
     return render_template("stocktake.html", products=products)
 
 
 @app.route("/checkout")
 @login_required
 def checkout_page():
-    products = query_db(
-        "SELECT * FROM products WHERE user_id=%s ORDER BY name ASC",
-        (session["user_id"],)
-    )
-    return render_template("checkout.html", products=products)
+    products = query_db("SELECT * FROM products WHERE user_id=?", (session["user_id"],))
+    return render_template("checkout.html", products=[dict(p) for p in products])
 
 
 # --------------------------
@@ -394,12 +528,13 @@ def stock_remove_page():
         products = query_db("""
             SELECT id, name, barcode, qty
             FROM products
-            WHERE user_id=%s
+            WHERE user_id=?
             ORDER BY name ASC
         """, (session["user_id"],))
 
+    products = [dict(p) for p in products]
     for p in products:
-        p["qty"] = int(p.get("qty") or 0)
+        p["qty"] = p.get("qty") or 0
 
     return render_template("stock_remove.html", products=products)
 
@@ -442,14 +577,14 @@ def admin_page():
         flash("❌ Access denied")
         return redirect(url_for("index"))
 
-    users = query_db("SELECT id, username, role FROM users ORDER BY id ASC")
-    products = query_db("SELECT * FROM products ORDER BY id DESC")
-
+    users = query_db("SELECT id, username, role FROM users")
+    products = query_db("SELECT * FROM products")
+    products = [dict(p) for p in products]
     for p in products:
-        p["price"] = float(p.get("price") or 0.0)
-        p["cost"] = float(p.get("cost") or 0.0)
-        p["qty"] = int(p.get("qty") or 0)
-        p["min_qty"] = int(p.get("min_qty") or 0)
+        p["price"] = p.get("price") or 0.0
+        p["cost"] = p.get("cost") or 0.0
+        p["qty"] = p.get("qty") or 0
+        p["min_qty"] = p.get("min_qty") or 0
 
     return render_template("admin.html", users=users, products=products)
 
@@ -461,7 +596,7 @@ def delete_user(id):
         flash("❌ Access denied")
         return redirect(url_for("index"))
 
-    user = query_db("SELECT * FROM users WHERE id=%s", (id,), one=True)
+    user = query_db("SELECT * FROM users WHERE id=?", (id,), one=True)
     if not user:
         flash("⚠️ User not found")
         return redirect(url_for("admin_page"))
@@ -470,7 +605,7 @@ def delete_user(id):
         flash("⚠️ Cannot delete default admin user")
         return redirect(url_for("admin_page"))
 
-    execute_db("DELETE FROM users WHERE id=%s", (id,))
+    execute_db("DELETE FROM users WHERE id=?", (id,))
     flash(f"✅ User {user['username']} deleted")
     return redirect(url_for("admin_page"))
 
@@ -482,7 +617,7 @@ def export_users():
         flash("❌ Access denied")
         return redirect(url_for("index"))
 
-    users = query_db("SELECT id, username, role FROM users ORDER BY id ASC")
+    users = query_db("SELECT id, username, role FROM users")
     df = pd.DataFrame(users, columns=["id", "username", "role"])
     filepath = os.path.join(app.config["UPLOAD_FOLDER"], "users_export.xlsx")
     df.to_excel(filepath, index=False)
@@ -496,28 +631,31 @@ def export_products():
         flash("❌ Access denied")
         return redirect(url_for("index"))
 
-    products = query_db("SELECT * FROM products ORDER BY id ASC")
-    df = pd.DataFrame(products)
+    products = query_db("SELECT * FROM products")
+    df = pd.DataFrame(
+        products,
+        columns=["id", "user_id", "sku", "name", "price", "cost", "qty", "min_qty", "barcode"]
+    )
     filepath = os.path.join(app.config["UPLOAD_FOLDER"], "products_export.xlsx")
     df.to_excel(filepath, index=False)
     return send_file(filepath, as_attachment=True)
 
 
 # --------------------------
-# API: Get product by ID
+# API: Get product by ID (for dropdown)
 # --------------------------
 @app.route("/api/product/<int:pid>")
 @login_required
 def api_get_product(pid):
     if session.get("role") == "admin":
         product = query_db(
-            "SELECT id, name, qty, barcode, user_id FROM products WHERE id=%s",
+            "SELECT id, name, qty, barcode, user_id FROM products WHERE id=?",
             (pid,),
             one=True
         )
     else:
         product = query_db(
-            "SELECT id, name, qty, barcode FROM products WHERE id=%s AND user_id=%s",
+            "SELECT id, name, qty, barcode FROM products WHERE id=? AND user_id=?",
             (pid, session["user_id"]),
             one=True
         )
@@ -525,19 +663,16 @@ def api_get_product(pid):
     if not product:
         return jsonify(success=False, error="Not found"), 404
 
-    return jsonify(
-        success=True,
-        product={
-            "id": product["id"],
-            "name": product["name"],
-            "barcode": product.get("barcode"),
-            "qty": int(product.get("qty") or 0),
-        }
-    )
+    return jsonify(success=True, product={
+        "id": product["id"],
+        "name": product["name"],
+        "barcode": product.get("barcode", ""),
+        "qty": int(product.get("qty") or 0),
+    })
 
 
 # --------------------------
-# API: Get product by BARCODE (partial match)
+# API: Get product by BARCODE (supports partial match)
 # --------------------------
 @app.route("/api/product/barcode/<barcode>")
 @login_required
@@ -547,13 +682,17 @@ def api_get_product_by_barcode(barcode):
 
     if session.get("role") == "admin":
         product = query_db(
-            "SELECT id, name, qty, barcode, user_id FROM products WHERE barcode ILIKE %s ORDER BY id DESC LIMIT 1",
+            "SELECT id, name, qty, barcode, user_id "
+            "FROM products WHERE barcode LIKE ? "
+            "ORDER BY id DESC LIMIT 1",
             (like_pattern,),
             one=True
         )
     else:
         product = query_db(
-            "SELECT id, name, qty, barcode FROM products WHERE barcode ILIKE %s AND user_id=%s ORDER BY id DESC LIMIT 1",
+            "SELECT id, name, qty, barcode "
+            "FROM products WHERE barcode LIKE ? AND user_id=? "
+            "ORDER BY id DESC LIMIT 1",
             (like_pattern, session["user_id"]),
             one=True
         )
@@ -561,15 +700,12 @@ def api_get_product_by_barcode(barcode):
     if not product:
         return jsonify(success=False, error="Not found"), 404
 
-    return jsonify(
-        success=True,
-        product={
-            "id": product["id"],
-            "name": product["name"],
-            "barcode": product.get("barcode"),
-            "qty": int(product.get("qty") or 0),
-        }
-    )
+    return jsonify(success=True, product={
+        "id": product["id"],
+        "name": product["name"],
+        "barcode": product.get("barcode", ""),
+        "qty": int(product.get("qty") or 0),
+    })
 
 
 # --------------------------
@@ -581,37 +717,32 @@ def api_get_product_by_barcode(barcode):
 def api_add_product():
     data = request.json or {}
     sku = (data.get("sku") or "").strip()
-    if not sku:
-        sku = "AUTO-NEW"
+    name = (data.get("name") or "").strip()
 
-    name = (data.get("name") or "").strip() or f"NUII-{sku}"
+    if not sku:
+        # give sku so unique upsert/import works
+        sku = f"AUTO-{int(pd.Timestamp.now().timestamp())}"
+
+    if not name:
+        name = f"NUII-{sku}"
+
     qty = int(data.get("qty") or 0)
     min_qty = int(data.get("min_qty") or 0)
 
-    # Upsert by (user_id, sku)
     execute_db("""
         INSERT INTO products (user_id, sku, name, price, cost, qty, min_qty, barcode)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-        ON CONFLICT (user_id, sku)
-        DO UPDATE SET
-            name=EXCLUDED.name,
-            price=EXCLUDED.price,
-            cost=EXCLUDED.cost,
-            qty=EXCLUDED.qty,
-            min_qty=EXCLUDED.min_qty,
-            barcode=EXCLUDED.barcode
+        VALUES (?,?,?,?,?,?,?,?)
     """, (
         session["user_id"],
         sku,
         name,
-        data.get("price", 0) or 0,
-        data.get("cost", 0) or 0,
+        float(data.get("price") or 0),
+        float(data.get("cost") or 0),
         qty,
         min_qty,
         (data.get("barcode") or "").strip(),
     ))
-
-    return jsonify(success=True)
+    return jsonify(success=True, product=data)
 
 
 # --------------------------
@@ -622,44 +753,45 @@ def api_add_product():
 @login_required
 def api_update_product():
     data = request.json or {}
-    pid = data.get("id")
-    if not pid:
-        return jsonify(success=False, error="Missing id"), 400
+    name = (data.get("name") or "").strip()
+    sku = (data.get("sku") or "").strip()
 
-    name = (data.get("name") or "").strip() or "NUII"
+    if not name:
+        name = f"NUII-{sku}" if sku else "NUII"
+
     qty = int(data.get("qty") or 0)
     min_qty = int(data.get("min_qty") or 0)
 
-    if session["role"] == "admin":
+    if session.get("role") == "admin":
         execute_db("""
             UPDATE products
-            SET name=%s, price=%s, cost=%s, qty=%s, min_qty=%s, barcode=%s
-            WHERE id=%s
+            SET name=?, price=?, cost=?, qty=?, min_qty=?, barcode=?
+            WHERE id=?
         """, (
             name,
-            data.get("price", 0) or 0,
-            data.get("cost", 0) or 0,
+            float(data.get("price") or 0),
+            float(data.get("cost") or 0),
             qty,
             min_qty,
             (data.get("barcode") or "").strip(),
-            pid,
+            data.get("id"),
         ))
     else:
         execute_db("""
             UPDATE products
-            SET name=%s, price=%s, cost=%s, qty=%s, min_qty=%s, barcode=%s
-            WHERE id=%s AND user_id=%s
+            SET name=?, price=?, cost=?, qty=?, min_qty=?, barcode=?
+            WHERE id=? AND user_id=?
         """, (
             name,
-            data.get("price", 0) or 0,
-            data.get("cost", 0) or 0,
+            float(data.get("price") or 0),
+            float(data.get("cost") or 0),
             qty,
             min_qty,
             (data.get("barcode") or "").strip(),
-            pid,
+            data.get("id"),
             session["user_id"],
         ))
-    return jsonify(success=True)
+    return jsonify(success=True, product=data)
 
 
 # --------------------------
@@ -669,10 +801,10 @@ def api_update_product():
 @csrf.exempt
 @login_required
 def api_delete_product(id):
-    if session["role"] == "admin":
-        execute_db("DELETE FROM products WHERE id=%s", (id,))
+    if session.get("role") == "admin":
+        execute_db("DELETE FROM products WHERE id=?", (id,))
     else:
-        execute_db("DELETE FROM products WHERE id=%s AND user_id=%s", (id, session["user_id"]))
+        execute_db("DELETE FROM products WHERE id=? AND user_id=?", (id, session["user_id"]))
     return jsonify(success=True)
 
 
@@ -685,31 +817,24 @@ def api_delete_product(id):
 def api_stocktake_draft():
     if request.method == "POST":
         data = request.json or {}
-        conn = get_db()
-        try:
-            with conn.cursor() as cur:
-                for upd in data.get("updates", []):
-                    cur.execute("""
-                        INSERT INTO stocktake_drafts (user_id, product_id, qty)
-                        VALUES (%s, %s, %s)
-                        ON CONFLICT (user_id, product_id)
-                        DO UPDATE SET qty=EXCLUDED.qty
-                    """, (
-                        session["user_id"],
-                        upd["id"],
-                        int(upd.get("qty") or 0)
-                    ))
-            conn.commit()
-            return jsonify(success=True)
-        except Exception as e:
-            conn.rollback()
-            return jsonify(success=False, error=str(e)), 500
+        for upd in data.get("updates", []):
+            execute_db("""
+                INSERT INTO stocktake_drafts (user_id, product_id, qty)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, product_id)
+                DO UPDATE SET qty=excluded.qty
+            """, (
+                session["user_id"],
+                upd["id"],
+                int(upd.get("qty") or 0)
+            ))
+        return jsonify(success=True)
 
     drafts = query_db(
-        "SELECT product_id, qty FROM stocktake_drafts WHERE user_id=%s",
+        "SELECT product_id, qty FROM stocktake_drafts WHERE user_id=?",
         (session["user_id"],)
     )
-    return jsonify(success=True, drafts=drafts)
+    return jsonify(success=True, drafts=[dict(d) for d in drafts])
 
 
 # --------------------------
@@ -720,51 +845,48 @@ def api_stocktake_draft():
 @login_required
 def api_stocktake_apply():
     data = request.json or {}
-    conn = get_db()
     changes = []
 
-    try:
-        with conn.cursor() as cur:
-            for upd in data.get("updates", []):
-                cur.execute("SELECT id, name, barcode, qty FROM products WHERE id=%s AND user_id=%s",
-                            (upd["id"], session["user_id"]))
-                product = cur.fetchone()
-                if not product:
-                    continue
+    for upd in data.get("updates", []):
+        product = query_db(
+            "SELECT name, barcode, qty FROM products WHERE id=?",
+            (upd["id"],),
+            one=True
+        )
+        if not product:
+            continue
 
-                old_qty = int(product["qty"] or 0)
-                new_qty = int(upd.get("qty") or 0)
+        old_qty = int(product.get("qty") or 0)
+        new_qty = int(upd.get("qty") or 0)
 
-                if old_qty == new_qty:
-                    continue
+        if old_qty != new_qty:
+            execute_db(
+                "UPDATE products SET qty=? WHERE id=? AND user_id=?",
+                (new_qty, upd["id"], session["user_id"])
+            )
 
-                diff = new_qty - old_qty
+            execute_db(
+                "DELETE FROM stocktake_drafts WHERE user_id=? AND product_id=?",
+                (session["user_id"], upd["id"])
+            )
 
-                cur.execute("UPDATE products SET qty=%s WHERE id=%s AND user_id=%s",
-                            (new_qty, upd["id"], session["user_id"]))
-                cur.execute("DELETE FROM stocktake_drafts WHERE user_id=%s AND product_id=%s",
-                            (session["user_id"], upd["id"]))
-                cur.execute("""
-                    INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
-                    VALUES (%s, %s, %s, %s)
-                """, (session["user_id"], upd["id"], diff, "stocktake adjust"))
+            diff = new_qty - old_qty
+            execute_db("""
+                INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
+                VALUES (?, ?, ?, ?)
+            """, (session["user_id"], upd["id"], diff, "stocktake adjust"))
 
-                changes.append(f"- {product['name']} (📌 {product.get('barcode','')})  {old_qty} ➝ {new_qty}")
+            changes.append(f"- {product['name']} (📌 {product.get('barcode','')})  {old_qty} ➝ {new_qty}")
 
-        conn.commit()
+    if changes:
+        message = "✏️ *បន្ថែមស្តុក*\n\n" + "\n".join(changes)
+        send_telegram(message)
 
-        if changes:
-            send_telegram("✏️ *បន្ថែមស្តុក*\n\n" + "\n".join(changes))
-
-        return jsonify(success=True)
-
-    except Exception as e:
-        conn.rollback()
-        return jsonify(success=False, error=str(e)), 500
+    return jsonify(success=True)
 
 
 # --------------------------
-# API: remove stock (single) - safe
+# API: remove stock (single)
 # --------------------------
 @app.route("/api/stock/remove", methods=["POST"])
 @csrf.exempt
@@ -774,84 +896,70 @@ def api_stock_remove():
 
     product_id = data.get("product_id")
     remove_qty = int(data.get("amount") or 0)
+
     base_reason = (data.get("reason") or "").strip()
     staff_name = (data.get("staff_name") or "").strip()
 
     if not staff_name:
         return jsonify(success=False, error="Staff name required"), 400
-    if not product_id or remove_qty <= 0:
-        return jsonify(success=False, error="Invalid product or amount"), 400
 
     reason_full = f"{base_reason} (by {staff_name})" if base_reason else f"(by {staff_name})"
 
-    conn = get_db()
-    try:
-        with conn.cursor() as cur:
-            # lock row
-            if session.get("role") == "admin":
-                cur.execute("""
-                    SELECT id, name, qty, barcode, user_id
-                    FROM products
-                    WHERE id=%s
-                    FOR UPDATE
-                """, (product_id,))
-                product = cur.fetchone()
-                target_user_id = product["user_id"] if product else None
-            else:
-                cur.execute("""
-                    SELECT id, name, qty, barcode
-                    FROM products
-                    WHERE id=%s AND user_id=%s
-                    FOR UPDATE
-                """, (product_id, session["user_id"]))
-                product = cur.fetchone()
-                target_user_id = session["user_id"] if product else None
+    if not product_id or remove_qty <= 0:
+        return jsonify(success=False, error="Invalid product or amount"), 400
 
-            if not product:
-                conn.rollback()
-                return jsonify(success=False, error="Product not found"), 404
-
-            current_qty = int(product["qty"] or 0)
-            new_qty = current_qty - remove_qty
-            if new_qty < 0:
-                conn.rollback()
-                return jsonify(success=False, error=f"Not enough stock. Current {current_qty}, remove {remove_qty}"), 400
-
-            if session.get("role") == "admin":
-                cur.execute("UPDATE products SET qty=%s WHERE id=%s", (new_qty, product["id"]))
-            else:
-                cur.execute("UPDATE products SET qty=%s WHERE id=%s AND user_id=%s",
-                            (new_qty, product["id"], session["user_id"]))
-
-            cur.execute("""
-                INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
-                VALUES (%s, %s, %s, %s)
-            """, (target_user_id, product["id"], -remove_qty, reason_full))
-
-        conn.commit()
-
-        msg = (
-            "📦 *បានដកស្តុកចេញ*\n"
-            "━━━━━━━━━━━━━━━\n"
-            f"🔹 *{product['name']}*\n"
-            f"   📌 បាកូដ៖ {product.get('barcode','')}\n"
-            f"   ➖ ដកចេញ៖ {remove_qty}\n"
-            f"   📉 មុនដក៖ {current_qty}  ដកហើយសល់៖ {new_qty}\n"
-            f"   👤 អ្នកដក៖ {staff_name}"
-            + (f"\n   📝 មូលហេតុ៖ {base_reason}" if base_reason else "")
-            + "\n━━━━━━━━━━━━━━━"
+    if session.get("role") == "admin":
+        product = query_db(
+            "SELECT id, name, qty, barcode, user_id FROM products WHERE id=?",
+            (product_id,),
+            one=True
         )
-        send_telegram(msg)
+        target_user_id = product["user_id"] if product else None
+    else:
+        product = query_db(
+            "SELECT id, name, qty, barcode FROM products WHERE id=? AND user_id=?",
+            (product_id, session["user_id"]),
+            one=True
+        )
+        target_user_id = session["user_id"] if product else None
 
-        return jsonify(success=True, product_id=product["id"], old_qty=current_qty, new_qty=new_qty)
+    if not product:
+        return jsonify(success=False, error="Product not found"), 404
 
-    except Exception as e:
-        conn.rollback()
-        return jsonify(success=False, error=str(e)), 500
+    current_qty = int(product.get("qty") or 0)
+    if current_qty - remove_qty < 0:
+        return jsonify(success=False, error=f"Not enough stock. Current {current_qty}, trying to remove {remove_qty}"), 400
+
+    new_qty = current_qty - remove_qty
+
+    if session.get("role") == "admin":
+        execute_db("UPDATE products SET qty=? WHERE id=?", (new_qty, product["id"]))
+    else:
+        execute_db("UPDATE products SET qty=? WHERE id=? AND user_id=?", (new_qty, product["id"], session["user_id"]))
+
+    execute_db("""
+        INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
+        VALUES (?, ?, ?, ?)
+    """, (target_user_id, product["id"], -remove_qty, reason_full))
+
+    msg = (
+        "📦 *បានដកស្តុកចេញ*\n"
+        "━━━━━━━━━━━━━━━\n"
+        f"🔹 *{product['name']}*\n"
+        f"   📌 បាកូដ៖ {product.get('barcode','')}\n"
+        f"   ➖ ដកចេញ៖ {remove_qty}\n"
+        f"   📉 មុនដក៖ {current_qty}  ដកហើយសល់៖ {new_qty}\n"
+        f"   👤 អ្នកដក៖ {staff_name}"
+        + (f"\n   📝 មូលហេតុ៖ {base_reason}" if base_reason else "")
+        + "\n━━━━━━━━━━━━━━━"
+    )
+    send_telegram(msg)
+
+    return jsonify(success=True, product_id=product["id"], old_qty=current_qty, new_qty=new_qty)
 
 
 # --------------------------
-# API: remove stock (BATCH) - atomic
+# API: remove stock (BATCH, atomic)
 # --------------------------
 @app.route("/api/stock/remove/batch", methods=["POST"])
 @csrf.exempt
@@ -867,95 +975,104 @@ def api_stock_remove_batch():
     tele_lines = []
 
     try:
-        with conn.cursor() as cur:
-            for i, it in enumerate(items, start=1):
-                product_id = it.get("product_id")
-                remove_qty = int(it.get("amount") or 0)
-                base_reason = (it.get("reason") or "").strip()
-                staff_name = (it.get("staff_name") or "").strip()
+        # Begin transaction
+        if is_postgres():
+            conn.autocommit = False
+            cur = conn.cursor()
+            cur.execute("BEGIN")
+        else:
+            cur = conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
 
-                if not staff_name:
-                    raise ValueError(f"Row {i}: Staff name required")
-                if not product_id or remove_qty <= 0:
-                    raise ValueError(f"Row {i}: Invalid product or amount")
+        for i, it in enumerate(items, start=1):
+            product_id = it.get("product_id")
+            remove_qty = int(it.get("amount") or 0)
+            base_reason = (it.get("reason") or "").strip()
+            staff_name = (it.get("staff_name") or "").strip()
 
-                reason_full = f"{base_reason} (by {staff_name})" if base_reason else f"(by {staff_name})"
+            res = {"index": i, "product_id": product_id, "amount": remove_qty, "reason": base_reason, "staff_name": staff_name}
 
-                # lock product row
-                if session.get("role") == "admin":
-                    cur.execute("""
-                        SELECT id, name, qty, barcode, user_id
-                        FROM products
-                        WHERE id=%s
-                        FOR UPDATE
-                    """, (product_id,))
-                    product = cur.fetchone()
-                    target_user_id = product["user_id"] if product else None
-                else:
-                    cur.execute("""
-                        SELECT id, name, qty, barcode
-                        FROM products
-                        WHERE id=%s AND user_id=%s
-                        FOR UPDATE
-                    """, (product_id, session["user_id"]))
-                    product = cur.fetchone()
-                    target_user_id = session["user_id"] if product else None
+            if not staff_name:
+                res["error"] = "Staff name required"
+                results.append(res)
+                raise ValueError("Staff name required")
 
-                if not product:
-                    raise ValueError(f"Row {i}: Product not found")
+            if not product_id or remove_qty <= 0:
+                res["error"] = "Invalid product or amount"
+                results.append(res)
+                raise ValueError("Invalid product or amount")
 
-                current_qty = int(product["qty"] or 0)
-                new_qty = current_qty - remove_qty
-                if new_qty < 0:
-                    raise ValueError(f"Row {i}: Not enough stock (current {current_qty}, remove {remove_qty})")
+            # Fetch product (role guard)
+            if session.get("role") == "admin":
+                product = query_db("SELECT id, name, qty, barcode, user_id FROM products WHERE id=?", (product_id,), one=True)
+                target_user_id = product["user_id"] if product else None
+            else:
+                product = query_db("SELECT id, name, qty, barcode FROM products WHERE id=? AND user_id=?", (product_id, session["user_id"]), one=True)
+                target_user_id = session["user_id"] if product else None
 
-                # update + movement
-                if session.get("role") == "admin":
-                    cur.execute("UPDATE products SET qty=%s WHERE id=%s", (new_qty, product["id"]))
-                else:
-                    cur.execute("UPDATE products SET qty=%s WHERE id=%s AND user_id=%s",
-                                (new_qty, product["id"], session["user_id"]))
+            if not product:
+                res["error"] = "Product not found"
+                results.append(res)
+                raise ValueError("Product not found")
 
-                cur.execute("""
-                    INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
-                    VALUES (%s, %s, %s, %s)
-                """, (target_user_id, product["id"], -remove_qty, reason_full))
+            current_qty = int(product.get("qty") or 0)
+            new_qty = current_qty - remove_qty
+            if new_qty < 0:
+                res["error"] = f"Not enough stock (current {current_qty}, remove {remove_qty})"
+                results.append(res)
+                raise ValueError("Not enough stock")
 
-                results.append({
-                    "index": i,
-                    "product_id": product["id"],
-                    "name": product["name"],
-                    "barcode": product.get("barcode"),
-                    "amount": remove_qty,
-                    "old_qty": current_qty,
-                    "new_qty": new_qty,
-                    "staff_name": staff_name,
-                    "reason": base_reason,
-                })
+            reason_full = f"{base_reason} (by {staff_name})" if base_reason else f"(by {staff_name})"
 
-                tele_lines.append(
-                    f"🔹 *{product['name']}*\n"
-                    f"   📌 បាកូដ៖ {product.get('barcode','')}\n"
-                    f"   ➖ ដកចេញ៖ {remove_qty}\n"
-                    f"   📉 មុន៖ {current_qty} ➜ បន្ទាប់៖ {new_qty}\n"
-                    f"   👤 អ្នកដក៖ {staff_name}"
-                    + (f"\n   📝 មូលហេតុ៖ {base_reason}" if base_reason else "")
-                )
+            # Update products
+            if session.get("role") == "admin":
+                cur.execute(_adapt_sql("UPDATE products SET qty=? WHERE id=?"), (new_qty, product["id"]))
+            else:
+                cur.execute(_adapt_sql("UPDATE products SET qty=? WHERE id=? AND user_id=?"), (new_qty, product["id"], session["user_id"]))
+
+            # Insert movement
+            cur.execute(_adapt_sql("""
+                INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
+                VALUES (?, ?, ?, ?)
+            """), (target_user_id, product["id"], -remove_qty, reason_full))
+
+            res.update({
+                "name": product["name"],
+                "barcode": product.get("barcode", ""),
+                "old_qty": current_qty,
+                "new_qty": new_qty,
+            })
+            results.append(res)
+
+            tele_lines.append(
+                f"🔹 *{product['name']}*\n"
+                f"   📌 បាកូដ៖ {product.get('barcode','')}\n"
+                f"   ➖ ដកចេញ៖ {remove_qty}\n"
+                f"   📉 មុន៖ {current_qty} ➜ បន្ទាប់៖ {new_qty}\n"
+                f"   👤 អ្នកដក៖ {staff_name}"
+                + (f"\n   📝 មូលហេតុ៖ {base_reason}" if base_reason else "")
+            )
 
         conn.commit()
+        if is_postgres():
+            conn.autocommit = False  # keep manual mode; safe
 
         if tele_lines:
-            send_telegram(
+            message = (
                 "📦 *របាយការណ៍ដកស្តុកចេញ (Batch)*\n"
                 "━━━━━━━━━━━━━━━\n"
                 + "\n\n".join(tele_lines)
                 + "\n━━━━━━━━━━━━━━━"
             )
+            send_telegram(message)
 
         return jsonify(success=True, results=results)
 
     except Exception as e:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return jsonify(success=False, error=str(e), results=results), 400
 
 
@@ -982,8 +1099,9 @@ def staff_page():
 
 
 # --------------------------
-# Run app
+# Run app (Render uses PORT)
 # --------------------------
 if __name__ == "__main__":
     init_db()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5009)), debug=True)
+    port = int(os.environ.get("PORT", 5009))
+    app.run(host="0.0.0.0", port=port)
