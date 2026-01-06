@@ -5,7 +5,6 @@ import pandas as pd
 import requests
 from functools import wraps
 from datetime import timedelta
-from urllib.parse import urlparse
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
@@ -15,9 +14,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from flask_wtf.csrf import CSRFProtect
 
-# Postgres (Render)
-import psycopg2
-import psycopg2.extras
+# ✅ Postgres (Render) - psycopg v3
+import psycopg
+from psycopg.rows import dict_row
 
 
 # --------------------------
@@ -65,7 +64,7 @@ def _pg_url():
 def _adapt_sql(sql: str) -> str:
     """
     Your code uses SQLite placeholders '?' everywhere.
-    psycopg2 uses %s. This converts ? -> %s for PostgreSQL.
+    psycopg uses %s. This converts ? -> %s for PostgreSQL.
     """
     if not is_postgres():
         return sql
@@ -78,16 +77,15 @@ def get_db():
         return db
 
     if is_postgres():
-        db = g._database = psycopg2.connect(
+        db = g._database = psycopg.connect(
             _pg_url(),
-            cursor_factory=psycopg2.extras.RealDictCursor,
+            row_factory=dict_row,
+            autocommit=False,
         )
-        # We will commit manually in execute_db / transactions
-        db.autocommit = False
     else:
-        # SQLite
         db = g._database = sqlite3.connect(DATABASE, timeout=10, isolation_level=None)
         db.row_factory = sqlite3.Row  # dict-like rows
+
     return db
 
 
@@ -101,6 +99,15 @@ def close_connection(exception):
             pass
 
 
+def _row_to_dict(r):
+    # SQLite Row -> dict; psycopg already dict_row
+    if r is None:
+        return None
+    if isinstance(r, sqlite3.Row):
+        return dict(r)
+    return r
+
+
 def query_db(query, args=(), one=False):
     db = get_db()
     q = _adapt_sql(query)
@@ -109,12 +116,16 @@ def query_db(query, args=(), one=False):
         with db.cursor() as cur:
             cur.execute(q, args)
             rows = cur.fetchall()
-            return (rows[0] if rows else None) if one else rows
+            if one:
+                return rows[0] if rows else None
+            return rows
     else:
         cur = db.execute(q, args)
         rows = cur.fetchall()
         cur.close()
-        return (rows[0] if rows else None) if one else rows
+        if one:
+            return rows[0] if rows else None
+        return rows
 
 
 def execute_db(query, args=()):
@@ -159,7 +170,6 @@ def init_db():
         db = get_db()
 
         if is_postgres():
-            # USERS
             execute_db("""
                 CREATE TABLE IF NOT EXISTS users (
                     id BIGSERIAL PRIMARY KEY,
@@ -169,7 +179,6 @@ def init_db():
                 )
             """)
 
-            # PRODUCTS
             execute_db("""
                 CREATE TABLE IF NOT EXISTS products (
                     id BIGSERIAL PRIMARY KEY,
@@ -184,7 +193,6 @@ def init_db():
                 )
             """)
 
-            # Optional uniqueness (helps import "replace")
             # unique by (user_id, sku) to allow upsert import
             execute_db("""
                 DO $$
@@ -200,7 +208,6 @@ def init_db():
                 $$;
             """)
 
-            # STOCKTAKE DRAFTS
             execute_db("""
                 CREATE TABLE IF NOT EXISTS stocktake_drafts (
                     user_id BIGINT,
@@ -210,7 +217,6 @@ def init_db():
                 )
             """)
 
-            # MOVEMENTS
             execute_db("""
                 CREATE TABLE IF NOT EXISTS stock_movements (
                     id BIGSERIAL PRIMARY KEY,
@@ -229,14 +235,12 @@ def init_db():
                 ON CONFLICT (username) DO NOTHING
             """, ("admin", generate_password_hash("admin123"), "admin"))
 
-            # Indexes
             execute_db("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
             execute_db("CREATE INDEX IF NOT EXISTS idx_products_user ON products(user_id)")
             execute_db("CREATE INDEX IF NOT EXISTS idx_movements_created ON stock_movements(created_at)")
             execute_db("CREATE INDEX IF NOT EXISTS idx_movements_product ON stock_movements(product_id)")
 
         else:
-            # SQLite schema (your original)
             db.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -260,7 +264,6 @@ def init_db():
                 )
             """)
 
-            # Helpful unique key for import replace behavior
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_products_user_sku ON products(user_id, sku)")
 
             db.execute("""
@@ -292,7 +295,6 @@ def init_db():
             db.execute("CREATE INDEX IF NOT EXISTS idx_products_user ON products(user_id)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_movements_created ON stock_movements(created_at)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_movements_product ON stock_movements(product_id)")
-
             db.commit()
 
 
@@ -350,6 +352,7 @@ def login():
             (username,),
             one=True
         )
+        user = _row_to_dict(user)
 
         if user and check_password_hash(user["password"], password):
             session["user_id"] = user["id"]
@@ -395,7 +398,7 @@ def products_page():
             (session["user_id"],)
         )
 
-    products = [dict(p) for p in products]
+    products = [_row_to_dict(p) for p in products]
     for p in products:
         p["qty"] = p.get("qty") or 0
         p["min_qty"] = p.get("min_qty") or 0
@@ -428,10 +431,8 @@ def import_products():
                     sku = str(row.get("sku") or "").strip()
                     name = str(row.get("name") or "").strip()
 
-                    # ensure sku exists (needed for upsert)
                     if not sku:
                         sku = f"AUTO-{idx+1}"
-
                     if not name:
                         name = f"NUII-{sku}"
 
@@ -439,41 +440,23 @@ def import_products():
                     min_qty = int(row.get("min_qty") or 0)
                     barcode = str(row.get("barcode") or "").strip()
 
-                    if is_postgres():
-                        execute_db("""
-                            INSERT INTO products (user_id, sku, name, price, cost, qty, min_qty, barcode)
-                            VALUES (?,?,?,?,?,?,?,?)
-                            ON CONFLICT (user_id, sku)
-                            DO UPDATE SET
-                                name=EXCLUDED.name,
-                                price=EXCLUDED.price,
-                                cost=EXCLUDED.cost,
-                                qty=EXCLUDED.qty,
-                                min_qty=EXCLUDED.min_qty,
-                                barcode=EXCLUDED.barcode
-                        """, (
-                            session["user_id"], sku, name,
-                            float(row.get("price") or 0),
-                            float(row.get("cost") or 0),
-                            qty, min_qty, barcode
-                        ))
-                    else:
-                        execute_db("""
-                            INSERT INTO products (user_id, sku, name, price, cost, qty, min_qty, barcode)
-                            VALUES (?,?,?,?,?,?,?,?)
-                            ON CONFLICT(user_id, sku) DO UPDATE SET
-                                name=excluded.name,
-                                price=excluded.price,
-                                cost=excluded.cost,
-                                qty=excluded.qty,
-                                min_qty=excluded.min_qty,
-                                barcode=excluded.barcode
-                        """, (
-                            session["user_id"], sku, name,
-                            row.get("price", 0),
-                            row.get("cost", 0),
-                            qty, min_qty, barcode
-                        ))
+                    execute_db("""
+                        INSERT INTO products (user_id, sku, name, price, cost, qty, min_qty, barcode)
+                        VALUES (?,?,?,?,?,?,?,?)
+                        ON CONFLICT (user_id, sku)
+                        DO UPDATE SET
+                            name=EXCLUDED.name,
+                            price=EXCLUDED.price,
+                            cost=EXCLUDED.cost,
+                            qty=EXCLUDED.qty,
+                            min_qty=EXCLUDED.min_qty,
+                            barcode=EXCLUDED.barcode
+                    """, (
+                        session["user_id"], sku, name,
+                        float(row.get("price") or 0),
+                        float(row.get("cost") or 0),
+                        qty, min_qty, barcode
+                    ))
 
                 flash("✅ Products imported successfully")
                 return redirect(url_for("products_page"))
@@ -498,7 +481,7 @@ def download_template():
 @login_required
 def stocktake_page():
     products = query_db("SELECT * FROM products WHERE user_id=?", (session["user_id"],))
-    products = [dict(p) for p in products]
+    products = [_row_to_dict(p) for p in products]
     for p in products:
         p["qty"] = p.get("qty") or 0
         p["min_qty"] = p.get("min_qty") or 0
@@ -509,7 +492,7 @@ def stocktake_page():
 @login_required
 def checkout_page():
     products = query_db("SELECT * FROM products WHERE user_id=?", (session["user_id"],))
-    return render_template("checkout.html", products=[dict(p) for p in products])
+    return render_template("checkout.html", products=[_row_to_dict(p) for p in products])
 
 
 # --------------------------
@@ -532,7 +515,7 @@ def stock_remove_page():
             ORDER BY name ASC
         """, (session["user_id"],))
 
-    products = [dict(p) for p in products]
+    products = [_row_to_dict(p) for p in products]
     for p in products:
         p["qty"] = p.get("qty") or 0
 
@@ -563,7 +546,7 @@ def stock_history():
         ORDER BY sm.id DESC
         LIMIT 200
     """)
-
+    rows = [_row_to_dict(r) for r in rows]
     return render_template("stock_history.html", rows=rows)
 
 
@@ -578,8 +561,10 @@ def admin_page():
         return redirect(url_for("index"))
 
     users = query_db("SELECT id, username, role FROM users")
+    users = [_row_to_dict(u) for u in users]
+
     products = query_db("SELECT * FROM products")
-    products = [dict(p) for p in products]
+    products = [_row_to_dict(p) for p in products]
     for p in products:
         p["price"] = p.get("price") or 0.0
         p["cost"] = p.get("cost") or 0.0
@@ -597,6 +582,7 @@ def delete_user(id):
         return redirect(url_for("index"))
 
     user = query_db("SELECT * FROM users WHERE id=?", (id,), one=True)
+    user = _row_to_dict(user)
     if not user:
         flash("⚠️ User not found")
         return redirect(url_for("admin_page"))
@@ -618,6 +604,7 @@ def export_users():
         return redirect(url_for("index"))
 
     users = query_db("SELECT id, username, role FROM users")
+    users = [_row_to_dict(u) for u in users]
     df = pd.DataFrame(users, columns=["id", "username", "role"])
     filepath = os.path.join(app.config["UPLOAD_FOLDER"], "users_export.xlsx")
     df.to_excel(filepath, index=False)
@@ -632,6 +619,7 @@ def export_products():
         return redirect(url_for("index"))
 
     products = query_db("SELECT * FROM products")
+    products = [_row_to_dict(p) for p in products]
     df = pd.DataFrame(
         products,
         columns=["id", "user_id", "sku", "name", "price", "cost", "qty", "min_qty", "barcode"]
@@ -660,6 +648,7 @@ def api_get_product(pid):
             one=True
         )
 
+    product = _row_to_dict(product)
     if not product:
         return jsonify(success=False, error="Not found"), 404
 
@@ -697,6 +686,7 @@ def api_get_product_by_barcode(barcode):
             one=True
         )
 
+    product = _row_to_dict(product)
     if not product:
         return jsonify(success=False, error="Not found"), 404
 
@@ -720,7 +710,6 @@ def api_add_product():
     name = (data.get("name") or "").strip()
 
     if not sku:
-        # give sku so unique upsert/import works
         sku = f"AUTO-{int(pd.Timestamp.now().timestamp())}"
 
     if not name:
@@ -834,7 +823,8 @@ def api_stocktake_draft():
         "SELECT product_id, qty FROM stocktake_drafts WHERE user_id=?",
         (session["user_id"],)
     )
-    return jsonify(success=True, drafts=[dict(d) for d in drafts])
+    drafts = [_row_to_dict(d) for d in drafts]
+    return jsonify(success=True, drafts=drafts)
 
 
 # --------------------------
@@ -853,6 +843,7 @@ def api_stocktake_apply():
             (upd["id"],),
             one=True
         )
+        product = _row_to_dict(product)
         if not product:
             continue
 
@@ -914,6 +905,7 @@ def api_stock_remove():
             (product_id,),
             one=True
         )
+        product = _row_to_dict(product)
         target_user_id = product["user_id"] if product else None
     else:
         product = query_db(
@@ -921,6 +913,7 @@ def api_stock_remove():
             (product_id, session["user_id"]),
             one=True
         )
+        product = _row_to_dict(product)
         target_user_id = session["user_id"] if product else None
 
     if not product:
@@ -975,13 +968,12 @@ def api_stock_remove_batch():
     tele_lines = []
 
     try:
+        cur = conn.cursor()
+
         # Begin transaction
         if is_postgres():
-            conn.autocommit = False
-            cur = conn.cursor()
             cur.execute("BEGIN")
         else:
-            cur = conn.cursor()
             cur.execute("BEGIN IMMEDIATE")
 
         for i, it in enumerate(items, start=1):
@@ -1005,9 +997,11 @@ def api_stock_remove_batch():
             # Fetch product (role guard)
             if session.get("role") == "admin":
                 product = query_db("SELECT id, name, qty, barcode, user_id FROM products WHERE id=?", (product_id,), one=True)
+                product = _row_to_dict(product)
                 target_user_id = product["user_id"] if product else None
             else:
                 product = query_db("SELECT id, name, qty, barcode FROM products WHERE id=? AND user_id=?", (product_id, session["user_id"]), one=True)
+                product = _row_to_dict(product)
                 target_user_id = session["user_id"] if product else None
 
             if not product:
@@ -1054,8 +1048,6 @@ def api_stock_remove_batch():
             )
 
         conn.commit()
-        if is_postgres():
-            conn.autocommit = False  # keep manual mode; safe
 
         if tele_lines:
             message = (
@@ -1074,6 +1066,12 @@ def api_stock_remove_batch():
         except Exception:
             pass
         return jsonify(success=False, error=str(e), results=results), 400
+
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
 
 
 # --------------------------
