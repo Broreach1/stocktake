@@ -19,12 +19,26 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "super_secret_key")
 csrf = CSRFProtect(app)
 
-# ==========================
-# ✅ RENDER PERSISTENT DATABASE
-# ==========================
-DATABASE = os.environ.get("DATABASE_PATH", "/var/data/pos.db")
-os.makedirs(os.path.dirname(DATABASE), exist_ok=True)
+# =================================================
+# ✅ RENDER + LOCAL SAFE DATABASE CONFIG (FIXED)
+# =================================================
+DATABASE = os.environ.get("DATABASE_PATH")
 
+# If Render disk not attached → fallback to project dir
+if not DATABASE:
+    DATABASE = os.path.join(os.getcwd(), "pos.db")
+
+db_dir = os.path.dirname(DATABASE)
+if db_dir and not os.path.exists(db_dir):
+    try:
+        os.makedirs(db_dir, exist_ok=True)
+    except PermissionError:
+        # Render creates /var/data automatically when disk is attached
+        pass
+
+# --------------------------
+# Upload config
+# --------------------------
 UPLOAD_FOLDER = os.path.join("static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
@@ -36,7 +50,9 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = False
 
+# --------------------------
 # Telegram Config (unchanged)
+# --------------------------
 TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
     "7951793613:AAFkOBGmBURAVVusTmMCW2SCkGRsCWMY1Ug"
@@ -158,9 +174,9 @@ def init_db():
     db.commit()
 
 
-# ==========================
-# ✅ AUTO INIT DB ON RENDER
-# ==========================
+# =================================================
+# ✅ AUTO INIT DB FOR GUNICORN / RENDER
+# =================================================
 @app.before_first_request
 def auto_init_db():
     init_db()
@@ -173,6 +189,7 @@ def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         if "user_id" not in session:
+            flash("⚠️ Please log in first")
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return wrapper
@@ -184,10 +201,14 @@ def login_required(f):
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
 
-        user = query_db("SELECT * FROM users WHERE username=?", (username,), one=True)
+        user = query_db(
+            "SELECT * FROM users WHERE username=?",
+            (username,),
+            one=True
+        )
 
         if user and check_password_hash(user["password"], password):
             session["user_id"] = user["id"]
@@ -196,7 +217,8 @@ def login():
             session.permanent = True
             return redirect(url_for("stock_remove_page"))
 
-        flash("Invalid login")
+        flash("❌ Invalid username or password")
+
     return render_template("login.html")
 
 
@@ -204,6 +226,7 @@ def login():
 @login_required
 def logout():
     session.clear()
+    flash("✅ Logged out successfully")
     return redirect(url_for("login"))
 
 
@@ -220,12 +243,17 @@ def index():
 @login_required
 def stock_remove_page():
     if session.get("role") == "admin":
-        products = query_db("SELECT id,name,barcode,qty FROM products")
+        products = query_db("SELECT id, name, barcode, qty FROM products")
     else:
         products = query_db(
-            "SELECT id,name,barcode,qty FROM products WHERE user_id=?",
+            "SELECT id, name, barcode, qty FROM products WHERE user_id=?",
             (session["user_id"],)
         )
+
+    products = [dict(p) for p in products]
+    for p in products:
+        p["qty"] = p["qty"] or 0
+
     return render_template("stock_remove.html", products=products)
 
 
@@ -236,12 +264,18 @@ def stock_remove_page():
 @csrf.exempt
 @login_required
 def api_stock_remove():
-    data = request.json
+    data = request.json or {}
+
     product_id = data.get("product_id")
     remove_qty = int(data.get("amount") or 0)
     staff_name = data.get("staff_name", "")
 
-    product = query_db("SELECT * FROM products WHERE id=?", (product_id,), one=True)
+    product = query_db(
+        "SELECT * FROM products WHERE id=?",
+        (product_id,),
+        one=True
+    )
+
     if not product:
         return jsonify(success=False, error="Product not found"), 404
 
@@ -250,12 +284,21 @@ def api_stock_remove():
         return jsonify(success=False, error="Not enough stock"), 400
 
     new_qty = current_qty - remove_qty
-    execute_db("UPDATE products SET qty=? WHERE id=?", (new_qty, product_id))
+
+    execute_db(
+        "UPDATE products SET qty=? WHERE id=?",
+        (new_qty, product_id)
+    )
 
     execute_db("""
         INSERT INTO stock_movements (user_id, product_id, change_qty, reason)
-        VALUES (?,?,?,?)
-    """, (session["user_id"], product_id, -remove_qty, f"by {staff_name}"))
+        VALUES (?, ?, ?, ?)
+    """, (
+        session["user_id"],
+        product_id,
+        -remove_qty,
+        f"by {staff_name}"
+    ))
 
     send_telegram(
         f"📦 *បានដកស្តុកចេញ*\n"
@@ -269,8 +312,8 @@ def api_stock_remove():
 
 
 # --------------------------
-# Run app
+# Run app (LOCAL ONLY)
 # --------------------------
 if __name__ == "__main__":
     init_db()
-    app.run(host="0.0.0.0", port=5009)
+    app.run(host="0.0.0.0", port=5009, debug=True)
