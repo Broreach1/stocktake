@@ -12,47 +12,49 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from flask_wtf.csrf import CSRFProtect
 
-# --------------------------
+# ==========================
 # Flask setup
-# --------------------------
+# ==========================
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "super_secret_key")
 csrf = CSRFProtect(app)
 
-# =================================================
-# ✅ RENDER + LOCAL SAFE DATABASE CONFIG (FIXED)
-# =================================================
+# ==========================
+# DATABASE (Render + Local safe)
+# ==========================
 DATABASE = os.environ.get("DATABASE_PATH")
 
-# If Render disk not attached → fallback to project dir
+# If Render disk not mounted → fallback to local file
 if not DATABASE:
     DATABASE = os.path.join(os.getcwd(), "pos.db")
 
+# Try to create directory ONLY if allowed
 db_dir = os.path.dirname(DATABASE)
 if db_dir and not os.path.exists(db_dir):
     try:
         os.makedirs(db_dir, exist_ok=True)
     except PermissionError:
-        # Render creates /var/data automatically when disk is attached
-        pass
+        pass  # Render handles /var/data automatically
 
-# --------------------------
+# ==========================
 # Upload config
-# --------------------------
+# ==========================
 UPLOAD_FOLDER = os.path.join("static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {"xlsx"}
 
-# --- Remember me (30 days) ---
+# ==========================
+# Session config
+# ==========================
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = False
 
-# --------------------------
-# Telegram Config (unchanged)
-# --------------------------
+# ==========================
+# Telegram config
+# ==========================
 TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
     "7951793613:AAFkOBGmBURAVVusTmMCW2SCkGRsCWMY1Ug"
@@ -62,9 +64,9 @@ TELEGRAM_CHAT_ID = os.environ.get(
     "-1003244053484"
 )
 
-# --------------------------
-# DB helpers
-# --------------------------
+# ==========================
+# Database helpers
+# ==========================
 def get_db():
     db = getattr(g, "_database", None)
     if db is None:
@@ -78,7 +80,7 @@ def get_db():
 
 
 @app.teardown_appcontext
-def close_connection(exception):
+def close_db(exception):
     db = getattr(g, "_database", None)
     if db:
         db.close()
@@ -102,6 +104,9 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+# ==========================
+# Telegram sender
+# ==========================
 def send_telegram(text):
     try:
         requests.post(
@@ -117,9 +122,9 @@ def send_telegram(text):
         print("Telegram error:", e)
 
 
-# --------------------------
-# Initialize DB
-# --------------------------
+# ==========================
+# Initialize database (FLASK 3 SAFE)
+# ==========================
 def init_db():
     db = get_db()
 
@@ -147,15 +152,6 @@ def init_db():
     """)
 
     db.execute("""
-        CREATE TABLE IF NOT EXISTS stocktake_drafts (
-            user_id INTEGER,
-            product_id INTEGER,
-            qty INTEGER,
-            PRIMARY KEY (user_id, product_id)
-        )
-    """)
-
-    db.execute("""
         CREATE TABLE IF NOT EXISTS stock_movements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
@@ -174,30 +170,26 @@ def init_db():
     db.commit()
 
 
-# =================================================
-# ✅ AUTO INIT DB FOR GUNICORN / RENDER
-# =================================================
-@app.before_first_request
-def auto_init_db():
+# 🔥 IMPORTANT: INIT DB AT STARTUP (NO before_first_request)
+with app.app_context():
     init_db()
 
 
-# --------------------------
+# ==========================
 # Auth helpers
-# --------------------------
+# ==========================
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         if "user_id" not in session:
-            flash("⚠️ Please log in first")
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return wrapper
 
 
-# --------------------------
+# ==========================
 # Auth routes
-# --------------------------
+# ==========================
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -215,7 +207,7 @@ def login():
             session["username"] = user["username"]
             session["role"] = user["role"]
             session.permanent = True
-            return redirect(url_for("stock_remove_page"))
+            return redirect(url_for("stock_page"))
 
         flash("❌ Invalid username or password")
 
@@ -226,49 +218,52 @@ def login():
 @login_required
 def logout():
     session.clear()
-    flash("✅ Logged out successfully")
     return redirect(url_for("login"))
 
 
-# --------------------------
+# ==========================
 # Pages
-# --------------------------
+# ==========================
 @app.route("/")
 @login_required
-def index():
-    return render_template("index.html")
+def stock_page():
+    products = query_db("SELECT * FROM products")
+    return render_template("stock.html", products=products)
 
 
-@app.route("/stock/remove")
+# ==========================
+# API: Add product
+# ==========================
+@app.route("/api/product/add", methods=["POST"])
+@csrf.exempt
 @login_required
-def stock_remove_page():
-    if session.get("role") == "admin":
-        products = query_db("SELECT id, name, barcode, qty FROM products")
-    else:
-        products = query_db(
-            "SELECT id, name, barcode, qty FROM products WHERE user_id=?",
-            (session["user_id"],)
-        )
+def add_product():
+    data = request.json or {}
 
-    products = [dict(p) for p in products]
-    for p in products:
-        p["qty"] = p["qty"] or 0
+    execute_db("""
+        INSERT INTO products (user_id, name, qty, barcode)
+        VALUES (?, ?, ?, ?)
+    """, (
+        session["user_id"],
+        data.get("name"),
+        int(data.get("qty") or 0),
+        data.get("barcode", "")
+    ))
 
-    return render_template("stock_remove.html", products=products)
+    return jsonify(success=True)
 
 
-# --------------------------
-# API: remove stock
-# --------------------------
+# ==========================
+# API: Remove stock
+# ==========================
 @app.route("/api/stock/remove", methods=["POST"])
 @csrf.exempt
 @login_required
-def api_stock_remove():
+def remove_stock():
     data = request.json or {}
-
     product_id = data.get("product_id")
     remove_qty = int(data.get("amount") or 0)
-    staff_name = data.get("staff_name", "")
+    staff = data.get("staff_name", "")
 
     product = query_db(
         "SELECT * FROM products WHERE id=?",
@@ -277,11 +272,11 @@ def api_stock_remove():
     )
 
     if not product:
-        return jsonify(success=False, error="Product not found"), 404
+        return jsonify(error="Product not found"), 404
 
     current_qty = int(product["qty"] or 0)
     if remove_qty > current_qty:
-        return jsonify(success=False, error="Not enough stock"), 400
+        return jsonify(error="Not enough stock"), 400
 
     new_qty = current_qty - remove_qty
 
@@ -297,7 +292,7 @@ def api_stock_remove():
         session["user_id"],
         product_id,
         -remove_qty,
-        f"by {staff_name}"
+        f"by {staff}"
     ))
 
     send_telegram(
@@ -305,15 +300,14 @@ def api_stock_remove():
         f"🔹 *{product['name']}*\n"
         f"➖ ដកចេញ៖ {remove_qty}\n"
         f"📉 មុន៖ {current_qty} ➜ បន្ទាប់៖ {new_qty}\n"
-        f"👤 អ្នកដក៖ {staff_name}"
+        f"👤 អ្នកដក៖ {staff}"
     )
 
     return jsonify(success=True, new_qty=new_qty)
 
 
-# --------------------------
-# Run app (LOCAL ONLY)
-# --------------------------
+# ==========================
+# Run locally only
+# ==========================
 if __name__ == "__main__":
-    init_db()
     app.run(host="0.0.0.0", port=5009, debug=True)
